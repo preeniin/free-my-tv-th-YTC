@@ -49,8 +49,25 @@ final class Ui {
         semibold = font(a, 14, 600);
     }
 
-    /** Inter at an optical size (14 = text, 32 = display) and weight; the system font if the file is missing. */
+    /**
+     * Inter at an optical size (14 = text, 32 = display) and weight; the system font if the file is missing. On Android
+     * 10+ Thai falls back to the bundled Noto Sans Thai at the same weight (the TV's own has only 400 and 700).
+     */
     private static Typeface font(AssetManager a, int opticalSize, int weight) {
+        if (Build.VERSION.SDK_INT >= 29 && has(a, FONT) && has(a, THAI)) {
+            try {
+                android.graphics.fonts.Font inter = new android.graphics.fonts.Font.Builder(a, FONT)
+                        .setFontVariationSettings("'opsz' " + opticalSize + ", 'wght' " + weight).setWeight(weight).build();
+                android.graphics.fonts.Font thai = new android.graphics.fonts.Font.Builder(a, THAI)
+                        .setFontVariationSettings("'wght' " + weight).setWeight(weight).build();
+                return new Typeface.CustomFallbackBuilder(new android.graphics.fonts.FontFamily.Builder(inter).build())
+                        .addCustomFallback(new android.graphics.fonts.FontFamily.Builder(thai).build())
+                        .setSystemFallback("sans-serif")
+                        .setStyle(new android.graphics.fonts.FontStyle(weight, android.graphics.fonts.FontStyle.FONT_SLANT_UPRIGHT))
+                        .build();
+            } catch (IOException | RuntimeException ignored) {
+            }
+        }
         if (has(a, FONT)) {
             try {
                 Typeface t = new Typeface.Builder(a, FONT)
@@ -62,7 +79,7 @@ final class Ui {
         return Typeface.create(Typeface.DEFAULT, weight, false);
     }
 
-    private static final String FONT = "fonts/InterVariable.ttf";
+    private static final String FONT = "fonts/InterVariable.ttf", THAI = "fonts/NotoSansThaiVariable.ttf";
 
     /** "pt", "es" or "en": the one picked (TV settings or config.properties), or with "auto" the TV's own, else English. */
     private static String language() {

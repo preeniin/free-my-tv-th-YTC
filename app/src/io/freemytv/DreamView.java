@@ -39,7 +39,7 @@ import java.util.concurrent.Executors;
  * Dark scrims only where there is text, stronger where the photo is bright. Any key exits (as on Apple TV).
  * Without photos (no TMDB key, or before the first fetch): the big clock over the night aurora.
  */
-final class DreamView extends View implements Choreographer.FrameCallback, HomeData.Listener, Recs.Listener {
+final class DreamView extends View implements Choreographer.FrameCallback, HomeData.Listener, Recs.Listener, Feed.Listener {
     private static final long SHOW_MS = 30_000, FADE_MS = 3_000, FIRST_MS = 1_600;
     private static final float ZOOM = 0.1f;
     /** Photos 10% larger than the screen (the zoom goes up to 1.1 without upscaling). */
@@ -96,6 +96,7 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
     private final Scene scene = new Scene();
     private final HomeData data;
     private final Recs recs;
+    private final Feed feed;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private ExecutorService worker = Executors.newSingleThreadExecutor();
     private final Recording content = Recording.create("clock");     // without photos: the clock over the aurora
@@ -121,7 +122,8 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
     private float k = 1;
     private long minute = -1;
     private String clock = "", date = "";
-    private Paint datePaint, clockPaint, weatherPaint, weatherDim, quotePaint, stalePaint;
+    private Paint ssDate, ssClock, ssTemp, ssCond, ssAir, ssRain, ssLabel, ssTime, ssTitle, ssMeta, ssChip, ssFill;
+    private boolean saverNight;
     private Paint cornerDate, cornerQuote, cornerStale, cornerClock, labelPaint, metaPaint;
     private TextPaint titlePaint;
 
@@ -130,6 +132,7 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
             if (!running) return;
             data.refreshIfStale();
             recs.refreshIfStale();
+            feed.refreshIfStale();
             recs.prefetchAll();
             dirty = true;
             chromeDirty = true;
@@ -142,6 +145,7 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
         super(c);
         data = HomeData.get(c);
         recs = Recs.get(c);
+        feed = Feed.get(c);
         Shaders.dream(scene.palette);
         scene.setMotion(0.4f, 0.32f);
         scene.applyPalette();
@@ -167,8 +171,10 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
         fallback = recs.showcase().isEmpty();
         data.addListener(this);
         recs.addListener(this);
+        feed.addListener(this);
         data.refreshIfStale();
         recs.refreshIfStale();
+        feed.refreshIfStale();
         recs.prefetchAll();
         prepareNext();
         handler.postDelayed(tick, 60_000);
@@ -185,6 +191,7 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
         handler.removeCallbacks(tick);
         data.removeListener(this);
         recs.removeListener(this);
+        feed.removeListener(this);
         // The photos stay in GPU memory until the garbage collector runs: release them now (after the last frame).
         final java.util.Set<Bitmap> gone = new java.util.HashSet<>();
         for (Slide s : new Slide[] {current, incoming, prepared}) {
@@ -210,6 +217,11 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
         invalidate();
     }
 
+    @Override public void onFeed() {
+        dirty = true;
+        invalidate();
+    }
+
     @Override public void onRecs() {
         if (running) prepareNext();
     }
@@ -221,17 +233,22 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
         scene.setSize(w, h);
         content.setPosition(0, 0, w, h);
         chrome.setPosition(0, 0, w, h);
-        // Without photos (the clock over the aurora).
-        datePaint = Ui.text(Ui.semibold, 36 * k, 0xD9FFFFFF);
-        datePaint.setTextAlign(Paint.Align.CENTER);
-        clockPaint = Ui.numbers(Ui.thin, 280 * k, 0xF2FFFFFF);
-        clockPaint.setTextAlign(Paint.Align.CENTER);
-        clockPaint.setLetterSpacing(-0.01f);
-        weatherPaint = Ui.numbers(Ui.medium, 30 * k, 0xC7FFFFFF);
-        weatherDim = Ui.numbers(Ui.regular, 28 * k, 0x80FFFFFF);
-        quotePaint = Ui.numbers(Ui.medium, 24 * k, 0x99FFFFFF);
-        stalePaint = Ui.text(Ui.regular, 20 * k, 0x59FFFFFF);
-        stalePaint.setTextAlign(Paint.Align.CENTER);
+        // Without photos: the redesign's screensaver (clock, weather and the next event on a flat ground).
+        ssDate = Ui.text(Ui.semibold, 30 * k, 0xFF000000);
+        ssDate.setLetterSpacing(0.14f);
+        ssClock = Ui.numbers(Ui.thin, 300 * k, 0xFF000000);
+        ssClock.setLetterSpacing(-0.04f);
+        ssTemp = Ui.numbers(Ui.medium, 44 * k, 0xFF000000);
+        ssCond = Ui.text(Ui.medium, 32 * k, 0xFF000000);
+        ssAir = Ui.text(Ui.medium, 28 * k, 0xFF000000);
+        ssRain = Ui.numbers(Ui.semibold, 28 * k, 0xFF000000);
+        ssLabel = Ui.text(Ui.semibold, 22 * k, 0xFF000000);
+        ssLabel.setLetterSpacing(0.12f);
+        ssTime = Ui.numbers(Ui.semibold, 32 * k, 0xFF000000);
+        ssTitle = Ui.text(Ui.semibold, 36 * k, 0xFF000000);
+        ssMeta = Ui.text(Ui.regular, 24 * k, 0xFF000000);
+        ssChip = Ui.text(Ui.semibold, 22 * k, 0xFF000000);
+        ssFill = new Paint(Paint.ANTI_ALIAS_FLAG);
         // With photos: the corner (date, clock, prices) and the caption.
         cornerDate = Ui.numbers(Ui.semibold, 30 * k, 0xEBFFFFFF);
         cornerQuote = Ui.numbers(Ui.regular, 23 * k, 0xC7FFFFFF);
@@ -415,6 +432,7 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
             minute = now / 60_000;
             clock = Ui.clock(now);
             date = Ui.date(now);
+            saverNight = data.isNight(now);
             dirty = true;
             chromeDirty = true;
         }
@@ -724,7 +742,7 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
             lastSky = up;
             scene.advance(timeOffset + t);
         }
-        scene.drawBackground(canvas);
+        canvas.drawColor(saverNight ? 0xFF07090D : 0xFFECE9E2);
         if (dirty) {
             Canvas rc = content.beginRecording(w, h);
             try {
@@ -735,55 +753,137 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
             dirty = false;
         }
         double phase = 2 * Math.PI * t / DRIFT_PERIOD_S;
-        content.setTranslationX((float) (40 * k * Math.sin(phase)));
-        content.setTranslationY((float) (26 * k * Math.sin(2 * phase + 0.7)));
+        // Whole pixels only: text drifting by fractions of a pixel is resampled every frame and looks soft (worse once
+        // the TV scales its 1080p interface up to 4K).
+        content.setTranslationX(Math.round(40 * k * Math.sin(phase)));
+        content.setTranslationY(Math.round(26 * k * Math.sin(2 * phase + 0.7)));
         content.setAlpha(alpha);
         content.draw(canvas);
     }
 
-    private void drawContent(Canvas c) {
-        float cx = w / 2f;
-        float clockCap = Ui.cap(clockPaint);
-        float clockBase = h * 0.5f + clockCap / 2 - 10 * k;
-        c.drawText(date, cx, clockBase - clockCap - 34 * k, datePaint);
-        c.drawText(clock, cx, clockBase, clockPaint);
+        private void drawContent(Canvas c) {
+        long now = System.currentTimeMillis();
+        boolean night = saverNight;
+        int ink = night ? 0xFFE6E4DF : 0xFF16181D, sub = night ? 0xFF8D929C : 0xFF5B5F68;
+        int indigo = night ? 0xFF93A8FF : 0xFF3A5BD9, rain = night ? 0xFF7FB2FF : 0xFF2F6FD6;
+        int dim = night ? 0xFFB9BDC6 : 0xFF3E424A, line = night ? 0xFF232933 : 0xFFD6D2C9;
+        float x = 140 * k, top = 238 * k;
 
-        // Weather: symbol, temperature, high and low, centered under the clock.
+        ssDate.setColor(sub);
+        String day = new java.text.SimpleDateFormat("EEEE, d MMMM", java.util.Locale.ENGLISH).format(new java.util.Date(now));
+        c.drawText(day.toUpperCase(java.util.Locale.ENGLISH), x, Math.round(top + 19 * k + Ui.halfCap(ssDate)), ssDate);
+        ssClock.setColor(ink);
+        String hhmm = new java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).format(new java.util.Date(now));
+        c.drawText(hhmm, Math.round(126 * k), Math.round(top + 42 * k + 150 * k + Ui.cap(ssClock) / 2), ssClock);
+
+        // Weather: symbol, temperature, condition | air | chance of rain.
+        float cy = top + 392 * k;
         HomeData.Weather wx = data.weather;
         if (!Double.isNaN(wx.temp) && Prefs.weather()) {
-            float base = clockBase + 76 * k;
-            String symbol = Symbols.weather(wx.code, wx.isDay);
-            String now = HomeData.degrees(wx.temp);
-            String range = Ui.en ? "H:" + HomeData.degrees(wx.max) + "  L:" + HomeData.degrees(wx.min)
-                    : "Máx. " + HomeData.degrees(wx.max) + "  Mín. " + HomeData.degrees(wx.min);
-            float sw = Symbols.width(getContext(), symbol, 32 * k);
-            float width = sw + 12 * k + weatherPaint.measureText(now) + 18 * k + weatherDim.measureText(range);
-            float x = cx - width / 2;
-            Symbols.draw(getContext(), c, symbol, x + sw / 2, base - Ui.halfCap(weatherPaint), 32 * k, 0xC7FFFFFF);
-            x += sw + 12 * k;
-            c.drawText(now, x, base, weatherPaint);
-            x += weatherPaint.measureText(now) + 18 * k;
-            c.drawText(range, x, base, weatherDim);
+            float rx = x;
+            Icons.draw(c, Icons.weather(wx.code, wx.isDay), rx + 28 * k, cy, 56 * k, ink, night);
+            rx += 78 * k;
+            String temp = HomeData.degrees(wx.temp);
+            ssTemp.setColor(ink);
+            c.drawText(temp, Math.round(rx), Math.round(cy + Ui.halfCap(ssTemp)), ssTemp);
+            rx += ssTemp.measureText(temp) + 22 * k;
+            String cond = HomeData.condition(wx.code, wx.isDay);
+            ssCond.setColor(sub);
+            c.drawText(cond, Math.round(rx), Math.round(cy + Ui.halfCap(ssCond)), ssCond);
+            rx += ssCond.measureText(cond) + 22 * k;
+            double pm = data.pm25;
+            String rainText = rainText(wx);
+            if (!Double.isNaN(pm) || rainText != null) {
+                ssFill.setColor(line);
+                c.drawRoundRect(Math.round(rx), cy - 18 * k, Math.round(rx) + 2 * k, cy + 18 * k, k, k, ssFill);
+                rx += 24 * k;
+            }
+            if (!Double.isNaN(pm)) {
+                ssFill.setColor(HomeData.pmColor(pm));
+                c.drawCircle(rx + 8 * k, cy, 8 * k, ssFill);
+                rx += 26 * k;
+                String air = "PM2.5 " + Math.round(pm);
+                ssAir.setColor(dim);
+                c.drawText(air, Math.round(rx), Math.round(cy + Ui.halfCap(ssAir)), ssAir);
+                rx += ssAir.measureText(air) + 22 * k;
+            }
+            if (rainText != null) {
+                Icons.draw(c, "drop", rx + 9 * k, cy, 22 * k, rain, night);
+                rx += 28 * k;
+                ssRain.setColor(rain);
+                c.drawText(rainText, Math.round(rx), Math.round(cy + Ui.halfCap(ssRain)), ssRain);
+            }
         }
+        drawNext(c, now, night, ink, sub, indigo);
+    }
 
-        // Prices near the bottom edge: small white logo + value, all four on one line.
-        float cap = Ui.cap(quotePaint), spacing = 56 * k, gap = 10 * k;
-        int[] coins = HomeData.active();
-        String[] values = new String[HomeData.coinCount()];
-        float total = spacing * (values.length - 1);
-        for (int i = 0; i < values.length; i++) {
-            values[i] = HomeData.price(data.prices[coins[i]]);
-            total += Glyphs.width(getContext(), HomeData.COINS[coins[i]], cap) + gap + quotePaint.measureText(values[i]);
+    /** "10%" for the next hour, or "Rain 70% at 17:00" when rain is likely (50% or more) within the next hours. */
+    private static String rainText(HomeData.Weather wx) {
+        int best = -1, at = -1;
+        for (int i = 0; i < Math.min(6, wx.hourRain.size()); i++) {
+            int r = wx.hourRain.get(i);
+            if (r > best) { best = r; at = i; }
         }
-        float x = cx - total / 2, base = h - 92 * k;
-        for (int i = 0; i < values.length; i++) {
-            float gw = Glyphs.width(getContext(), HomeData.COINS[coins[i]], cap);
-            Glyphs.coin(getContext(), c, HomeData.COINS[coins[i]], x + gw / 2, base - cap / 2, cap, 0x80FFFFFF);
-            x += gw + gap;
-            c.drawText(values[i], x, base, quotePaint);
-            x += quotePaint.measureText(values[i]) + spacing;
+        if (best < 0) return null;
+        if (best >= 50) {
+            return "Rain " + best + "% at " + new java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).format(new java.util.Date(wx.hours.get(at)));
         }
-        String stale = HomeData.staleness(data.pricesAt, 5 * 60_000L);
-        if (!stale.isEmpty() && values.length > 0) c.drawText(Ui.tr("cotações de ", "prices from ") + stale, cx, base + 38 * k, stalePaint);
+        return wx.hourRain.get(0) + "%";
+    }
+
+    /** The next event, bottom right (nothing when there is no calendar or nothing coming). */
+    private void drawNext(Canvas c, long now, boolean night, int ink, int sub, int indigo) {
+        Ical.Event e = feed.next(now);
+        if (e == null) return;
+        float cw = 600 * k, ch = 194 * k, left = w - 140 * k - cw, top = h - 110 * k - ch, pad = 36 * k;
+        ssFill.setStyle(Paint.Style.FILL);
+        ssFill.setColor(night ? 0xFF10141A : 0xFFFFFEFB);
+        c.drawRoundRect(left, top, left + cw, top + ch, 28 * k, 28 * k, ssFill);
+        if (night) {
+            ssFill.setStyle(Paint.Style.STROKE);
+            ssFill.setStrokeWidth(2 * k);
+            ssFill.setColor(0xFF1A2029);
+            c.drawRoundRect(left + k, top + k, left + cw - k, top + ch - k, 27 * k, 27 * k, ssFill);
+            ssFill.setStyle(Paint.Style.FILL);
+        }
+        float hy = top + 32 * k + 14 * k;   // the header row's centre
+        Icons.draw(c, "calendar", left + pad + 13 * k, hy, 26 * k, indigo, night);
+        ssLabel.setColor(indigo);
+        c.drawText("NEXT UP", Math.round(left + pad + 38 * k), Math.round(hy + Ui.halfCap(ssLabel)), ssLabel);
+        String chip = Feed.chip(e, now);
+        float right = left + cw - pad;
+        if (chip != null) {
+            float tw = ssChip.measureText(chip), pw = tw + 32 * k, ph = 38 * k;
+            ssFill.setColor(indigo);
+            c.drawRoundRect(right - pw, hy - ph / 2, right, hy + ph / 2, ph / 2, ph / 2, ssFill);
+            ssChip.setColor(night ? 0xFF0D1015 : 0xFFFFFEFB);
+            c.drawText(chip, Math.round(right - pw + 16 * k), Math.round(hy + Ui.halfCap(ssChip)), ssChip);
+        } else {
+            java.util.Calendar a = new java.util.GregorianCalendar(), b = new java.util.GregorianCalendar();
+            a.setTimeInMillis(now);
+            b.setTimeInMillis(e.start);
+            int diff = b.get(java.util.Calendar.DAY_OF_YEAR) - a.get(java.util.Calendar.DAY_OF_YEAR)
+                    + 365 * (b.get(java.util.Calendar.YEAR) - a.get(java.util.Calendar.YEAR));
+            String when = diff == 0 ? "Today" : diff == 1 ? "Tomorrow"
+                    : new java.text.SimpleDateFormat("EEE d MMM", java.util.Locale.ENGLISH).format(new java.util.Date(e.start));
+            ssMeta.setColor(sub);
+            c.drawText(when, Math.round(right - ssMeta.measureText(when)), Math.round(hy + Ui.halfCap(ssMeta)), ssMeta);
+        }
+        float by = top + 32 * k + 28 * k + 10 * k + 6 * k + 23 * k;   // the title line's centre
+        String time = e.allDay ? "All day" : new java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).format(new java.util.Date(e.start));
+        ssTime.setColor(indigo);
+        float tx = left + pad;
+        c.drawText(time, Math.round(tx), Math.round(by + Ui.halfCap(ssTime)), ssTime);
+        tx += ssTime.measureText(time) + 20 * k;
+        ssTitle.setColor(ink);
+        String title = e.title.isEmpty() ? "(no title)" : e.title;
+        c.drawText(android.text.TextUtils.ellipsize(title, new android.text.TextPaint(ssTitle), right - tx, android.text.TextUtils.TruncateAt.END).toString(),
+                Math.round(tx), Math.round(by + Ui.halfCap(ssTitle)), ssTitle);
+        String meta = Feed.meta(e);
+        if (!meta.isEmpty()) {
+            ssMeta.setColor(sub);
+            c.drawText(android.text.TextUtils.ellipsize(meta, new android.text.TextPaint(ssMeta), right - left - pad, android.text.TextUtils.TruncateAt.END).toString(),
+                    Math.round(left + pad), Math.round(by + 23 * k + 10 * k + 15 * k + Ui.halfCap(ssMeta)), ssMeta);
+        }
     }
 }

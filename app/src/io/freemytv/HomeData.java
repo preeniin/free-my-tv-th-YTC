@@ -35,7 +35,26 @@ final class HomeData {
     /** Binance quotes dollars as USDT. */
     private static final String QUOTE = CURRENCY.equals("USD") ? "USDT" : CURRENCY;
     private static final String WEATHER_QUERY = "&current=temperature_2m,weather_code,is_day&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset"
-            + "&hourly=temperature_2m,weather_code,is_day&timezone=auto&forecast_days=2";
+            + "&hourly=temperature_2m,weather_code,is_day,precipitation_probability&timezone=auto&forecast_days=2";
+
+    private static String airUrl() {
+        return "https://air-quality-api.open-meteo.com/v1/air-quality?latitude=" + Prefs.latitude() + "&longitude=" + Prefs.longitude()
+                + "&current=pm2_5&timezone=auto";
+    }
+
+    /** PM2.5 bands of Thailand's Pollution Control Department (µg/m³): the label and the dot color of each. */
+    private static final double[] PM_LIMITS = {15, 25, 37.5, 75};
+    private static final String[] PM_LABELS = {"Very good", "Good", "Moderate", "Unhealthy", "Very unhealthy"};
+    private static final int[] PM_COLORS = {0xFF2F8FD6, 0xFF2E9D52, 0xFFE0B420, 0xFFFF8A2A, 0xFFE5403A};
+
+    static int pmBand(double v) {
+        int i = 0;
+        while (i < PM_LIMITS.length && v > PM_LIMITS[i]) i++;
+        return i;
+    }
+
+    static String pmLabel(double v) { return PM_LABELS[pmBand(v)]; }
+    static int pmColor(double v) { return PM_COLORS[pmBand(v)]; }
 
     private static String weatherPlace() {
         return Prefs.latitude() + "," + Prefs.longitude();
@@ -45,6 +64,9 @@ final class HomeData {
         return "https://api.open-meteo.com/v1/forecast?latitude=" + Prefs.latitude() + "&longitude=" + Prefs.longitude() + WEATHER_QUERY;
     }
     private static final long PRICES_EVERY = 5 * 60_000L, WEATHER_EVERY = 30 * 60_000L;
+    /** Bump when the saved forecast gains fields (the saved one is discarded and fetched again). 2: chance of rain. */
+    private static final int WEATHER_V = 2;
+    private long airTriedAt;
     interface Listener { void onData(); }
 
     /** BTC, ETH and SOL; in Brazilian reais also the dollar (USDT/BRL), which Binance doesn't list for most currencies. */
@@ -95,7 +117,11 @@ final class HomeData {
         final List<Double> hourTemp = new ArrayList<>();
         final List<Integer> hourCode = new ArrayList<>();
         final List<Boolean> hourDay = new ArrayList<>();
+        final List<Integer> hourRain = new ArrayList<>();   // chance of rain, %; -1 = unknown
     }
+
+    /** PM2.5 now, µg/m³ (NaN until fetched). */
+    volatile double pm25 = Double.NaN;
 
     private static HomeData instance;
 
@@ -126,9 +152,10 @@ final class HomeData {
             }
             String w = cache.getString("weather", null);
             // The cached forecast is for the city it was fetched for; another city means fetch again.
-            if (w != null && weatherPlace().equals(cache.getString("weatherPlace", ""))) {
+            if (w != null && weatherPlace().equals(cache.getString("weatherPlace", "")) && cache.getInt("weatherV", 0) == WEATHER_V) {
                 weather = parseWeather(w);
                 weatherAt = cache.getLong("weatherAt", 0);
+                if (cache.contains("pm25")) pm25 = cache.getFloat("pm25", Float.NaN);
             }
         } catch (Exception ignored) {}
     }
@@ -156,17 +183,27 @@ final class HomeData {
                 }
             });
         }
-        if (!fetchingWeather && (now - weatherAt > WEATHER_EVERY || now < weatherAt)) {
+        boolean airDue = Double.isNaN(pm25) && now - airTriedAt > 5 * 60_000L;
+        if (!fetchingWeather && (now - weatherAt > WEATHER_EVERY || now < weatherAt || airDue)) {
             fetchingWeather = true;
+            airTriedAt = now;
             io.execute(() -> {
                 try {
                     String body = get(weatherUrl());
                     weather = parseWeather(body);
                     weatherAt = System.currentTimeMillis();
-                    cache.edit().putString("weather", body).putLong("weatherAt", weatherAt).putString("weatherPlace", weatherPlace()).apply();
+                    cache.edit().putString("weather", body).putLong("weatherAt", weatherAt).putString("weatherPlace", weatherPlace())
+                            .putInt("weatherV", WEATHER_V).apply();
                     notifyListeners();
                 } catch (Exception e) {
                     AppLog.w("weather: " + e.getMessage());
+                }
+                try {
+                    pm25 = new JSONObject(get(airUrl())).getJSONObject("current").getDouble("pm2_5");
+                    cache.edit().putFloat("pm25", (float) pm25).apply();
+                    notifyListeners();
+                } catch (Exception e) {
+                    AppLog.w("air: " + e.getMessage());
                 } finally {
                     fetchingWeather = false;
                 }
@@ -216,6 +253,7 @@ final class HomeData {
             JSONArray temps = hourly.getJSONArray("temperature_2m");
             JSONArray codes = hourly.getJSONArray("weather_code");
             JSONArray days = hourly.optJSONArray("is_day");
+            JSONArray rain = hourly.optJSONArray("precipitation_probability");
             long now = System.currentTimeMillis();
             for (int i = 0; i < times.length() && w.hours.size() < 6; i++) {
                 long at = localTime(times.getString(i), zone);
@@ -224,6 +262,7 @@ final class HomeData {
                 w.hourTemp.add(temps.getDouble(i));
                 w.hourCode.add(codes.getInt(i));
                 w.hourDay.add(days == null || days.optInt(i, 1) == 1);
+                w.hourRain.add(rain == null || rain.isNull(i) ? -1 : rain.optInt(i, -1));
             }
         }
         return w;

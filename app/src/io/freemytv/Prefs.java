@@ -28,8 +28,14 @@ final class Prefs {
         Ui.applyLanguage();   // the language picked on the TV, now that it can be read
     }
 
+    /**
+     * The settings file is written by the settings screen and read by the home screen and the screensaver, which can
+     * run in different processes (Android 11: the screensaver is in the main one): MODE_MULTI_PROCESS makes each read
+     * pick up the other's change instead of keeping the value it loaded first.
+     */
+    @SuppressWarnings("deprecation")
     private static SharedPreferences sp() {
-        return app.getSharedPreferences("settings", Context.MODE_PRIVATE);
+        return app.getSharedPreferences("settings", Context.MODE_PRIVATE | Context.MODE_MULTI_PROCESS);
     }
 
     private static void put(String key, String value) {

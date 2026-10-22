@@ -54,13 +54,41 @@ final class Symbols {
     static void draw(Context c, Canvas canvas, String name, float cx, float cy, float pointSize, int color) {
         Bitmap b = get(c, name);
         if (b == null) return;
+        int w = Math.max(1, Math.round(b.getWidth() * pointSize / PX_PER_POINT));
+        int h = Math.max(1, Math.round(b.getHeight() * pointSize / PX_PER_POINT));
+        Bitmap sized = sized(name, b, w, h);
         synchronized (PAINT) {   // card loading (another thread) also draws symbols
-            drawLocked(canvas, b, cx, cy, pointSize, color);
+            drawLocked(canvas, sized, cx, cy, w, h, color);
         }
     }
 
-    private static void drawLocked(Canvas canvas, Bitmap b, float cx, float cy, float pointSize, int color) {
-        float w = b.getWidth() * pointSize / PX_PER_POINT, h = b.getHeight() * pointSize / PX_PER_POINT;
+    private static final Map<String, Bitmap> SIZED = new HashMap<>();
+
+    /**
+     * The symbol scaled to exactly w × h, once, by halving steps (a single 5× bilinear shrink drops detail, and mipmaps
+     * blur it): drawn 1:1 on whole pixels, small icons stay crisp, also after the TV scales its 1080p interface to 4K.
+     */
+    private static Bitmap sized(String name, Bitmap src, int w, int h) {
+        String key = name + "@" + w + "x" + h;
+        synchronized (SIZED) {
+            Bitmap cached = SIZED.get(key);
+            if (cached != null) return cached;
+            Bitmap b = src;
+            while (b.getWidth() / 2 >= w && b.getHeight() / 2 >= h) {
+                Bitmap half = Bitmap.createScaledBitmap(b, b.getWidth() / 2, b.getHeight() / 2, true);
+                if (b != src) b.recycle();
+                b = half;
+            }
+            Bitmap out = b.getWidth() == w && b.getHeight() == h ? b : Bitmap.createScaledBitmap(b, w, h, true);
+            if (b != src && b != out) b.recycle();
+            if (out == src) out = src.copy(Bitmap.Config.ARGB_8888, false);
+            if (SIZED.size() > 200) SIZED.clear();
+            SIZED.put(key, out);
+            return out;
+        }
+    }
+
+    private static void drawLocked(Canvas canvas, Bitmap b, float cx, float cy, float w, float h, int color) {
         PorterDuffColorFilter filter = FILTERS.get(color);
         if (filter == null) {
             // Animated colors (focus, night) produce a new color every frame: the cache must not grow forever.
@@ -69,7 +97,8 @@ final class Symbols {
             FILTERS.put(color, filter);
         }
         PAINT.setColorFilter(filter);
-        RECT.set(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2);
+        float left = Math.round(cx - w / 2), top = Math.round(cy - h / 2);
+        RECT.set(left, top, left + w, top + h);
         canvas.drawBitmap(b, null, RECT, PAINT);
     }
 
