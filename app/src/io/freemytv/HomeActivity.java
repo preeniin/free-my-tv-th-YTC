@@ -15,7 +15,7 @@ import android.widget.TextView;
  * back to the TV's original one.
  */
 public class HomeActivity extends Activity {
-    private HomeView home;
+    private LanternHome home;
     private int prefsVersion = Prefs.version;   // settings changed while we were away: start over
 
     @Override protected void onCreate(Bundle savedInstanceState) {
@@ -35,7 +35,7 @@ public class HomeActivity extends Activity {
             return;
         }
         Ui.init(this);
-        home = new HomeView(this);
+        home = new LanternHome(this);
         setContentView(home);
         getWindow().setBackgroundDrawable(null);
     }

@@ -33,8 +33,8 @@ import javax.crypto.Cipher;
 /**
  * ADB client that talks to the TV itself (127.0.0.1:5555, open while debugging is on). It's what lets the app switch
  * the home screen and the screensaver, and turn off apps, without a computer. The first time, the TV asks
- * "Allow USB debugging?" and you accept with "Always allow". Only HomeMode uses it, and only with its own fixed
- * commands (nothing from outside).
+ * "Allow USB debugging?" and you accept with "Always allow". Only HomeMode and Memory use it, and only with
+ * their own fixed commands (nothing from outside; Memory adds package names it checked against a strict pattern).
  * Protocol: https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/protocol.txt
  */
 final class Adb implements Closeable {

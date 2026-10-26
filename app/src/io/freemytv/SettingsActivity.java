@@ -1,28 +1,29 @@
 package io.freemytv;
 
 import android.app.Activity;
-import android.content.ComponentName;
+import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
-import android.graphics.BlurMaskFilter;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.Rect;
 import android.graphics.RectF;
+import android.graphics.Shader;
+import android.graphics.SweepGradient;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.provider.Settings;
-import android.text.StaticLayout;
-import android.text.TextPaint;
 import android.text.TextUtils;
+import android.text.TextPaint;
 import android.view.Choreographer;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.accessibility.AccessibilityNodeProvider;
+import android.widget.EditText;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -35,10 +36,10 @@ import java.util.Locale;
 import java.util.Set;
 
 /**
- * Free My TV's settings (the app's icon, "All Apps", or the gear on the home screen), in the style of Apple TV's
- * settings: the big symbol and title on the left, the list on the right with the focused row in white. "Home screen"
- * opens the Free My TV / Original choice (with a check on the current one); the switch runs in the main process
- * (HomeMode) and this screen only asks for it and follows the state file.
+ * Free My TV's settings (the app's icon, "All Apps", or the gear on the home screen), in the lantern look: a brand
+ * rail on the left and one scrolling list on the right (name, greeting, home screen, theme, weather and cards, shelf and
+ * remote, system). Home screen switches run in the main process (HomeMode); this screen asks for them and follows the
+ * state file.
  */
 public class SettingsActivity extends Activity {
     private SettingsView view;
@@ -109,44 +110,63 @@ public class SettingsActivity extends Activity {
         view.resume();
     }
 
+    /** The name after the greeting: the TV's own keyboard in a small dialog. */
+    void askName() {
+        final EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setText(Prefs.name());
+        input.setSelectAllOnFocus(true);
+        new AlertDialog.Builder(this).setTitle("ชื่อที่แสดง").setView(input)
+                .setPositiveButton("บันทึก", (d, which) -> {
+                    Prefs.setName(input.getText().toString());
+                    view.changed("บันทึกชื่อ “" + Prefs.name() + "” แล้ว");
+                })
+                .setNegativeButton("ยกเลิก", null).show();
+    }
+
     static final class SettingsView extends View implements Choreographer.FrameCallback {
-        private static final int MAIN = 0, HOME_CHOICE = 1, HOME_SETTINGS = 2, REMOTE_KEYS = 3, PICKER = 4, SHELF_EDIT = 5;
-        private static final float LIST_ROW_H = 68, LIST_ROW_GAP = 6;
-        private static final int PICK_VISIBLE = 9;
-        private static final float LIST_X = 1000, LIST_R = 1824, LIST_TOP = 186, ROW_H = 74, ROW_GAP = 8, CHOICE_H = 104;
-        private static final int AMBER = 0xFFFFC266, INK = 0xFF1C1C1E;
+        private static final int MAIN = 0, REMOTE_KEYS = 1, PICKER = 2, SHELF_EDIT = 3;
+        private static final int SECTION = 0, INPUT = 1, SEG = 2, SW = 3, VAL = 4, DANGER = 5, CHECK = 6, SHELF = 7, NOTE = 8;
+        private static final float RAIL_W = 360, BODY_X = 432, BODY_R = 1848, LIST_TOP = 178, LIST_BOTTOM = 996;
+        private static final String[] UNITS = {"C", "F", "auto"}, THEMES = {"auto", "light", "dark"};
+
+        private static final class Row {
+            int type, section;
+            String key, label, desc, value;
+            String[] opts;
+            int sel;
+            boolean on, warn, chevron;
+            float y, h;
+            boolean focusable() { return type != SECTION && type != NOTE; }
+        }
 
         private final SettingsActivity activity;
-        private final Scene scene = new Scene();
         private final Handler handler = new Handler(Looper.getMainLooper());
-        private final Spring[] pop = new Spring[12];
+        private final List<Row> rows = new ArrayList<>();
         private final List<String> appPkgs = new ArrayList<>(), appLabels = new ArrayList<>();
-        // The list picker (the app of a remote button): what it shows, which one is in use, where we are.
         private final List<String> pickLabels = new ArrayList<>();
-        // The shelf editor: the apps it can hold (selected ones first, in order) and the selection.
         private final List<String[]> shelfRows = new ArrayList<>();
         private final List<String> shelfOrder = new ArrayList<>();
-        private int pickFor, pickCurrent, pickScroll;   // pickFor: the remote button (index + 1)
-        private final RectF tmp = new RectF(), rowRect = new RectF(), focusBox = new RectF();
-        private JSONObject state = new JSONObject(), recs = new JSONObject();
-        private boolean hasKey;
+        private int pickFor, pickCurrent;
+        private JSONObject state = new JSONObject();
         private int screen = MAIN, focus;
-        private boolean running, okDown, backDown, wasBusy;
-        private StaticLayout errorLayout;   // the last error, wrapped (rebuilt only when it changes)
-        private String errorShown;
+        private boolean running, okDown, backDown, wasBusy, dirty = true;
+        private long pendingAt, toastAt;
+        private String toastText = "", signature = "";
+        private float scrollY, scrollTarget, contentH;
         private final Spoken spoken;
-        private long startedAt, lastNanos, pendingAt, lastSky;
         private int w, h;
         private float k = 1;
-        private Paint title, subtitle, version, rowLabel, rowValue, rowSub, header, cellLabel, cellValue, warn, spinner, white, shadow;
-        private TextPaint notice;
+        private Shader sky, markShader;
+        private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG), line = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF box = new RectF(), box2 = new RectF();
+        private Paint title, subtitle, label, desc, sec, val, segOff, segOn, inputText, badge, rail, railOn, brandTitle, brandSub,
+                railFoot, foot, kbd, toast, warn;
 
         private final Runnable poll = new Runnable() {
             @Override public void run() {
                 if (!running) return;
                 state = HomeMode.state(getContext());
-                hasKey = Recs.hasKey(getContext());
-                recs = Recs.status(getContext());
                 boolean nowBusy = !state.optString("busy").isEmpty();
                 if (nowBusy) pendingAt = 0;
                 // A switch just ended: TalkBack reads how it went (the newest notice).
@@ -156,6 +176,11 @@ public class SettingsActivity extends Activity {
                     if (newest != null) announceForAccessibility(newest.optString("text"));
                 }
                 wasBusy = nowBusy;
+                String now = state.optString("mode") + "|" + state.optString("busy") + "|" + state.optString("error") + "|" + Prefs.version;
+                if (!now.equals(signature)) {
+                    signature = now;
+                    dirty = true;
+                }
                 invalidate();
                 handler.postDelayed(this, 500);
             }
@@ -164,25 +189,23 @@ public class SettingsActivity extends Activity {
         SettingsView(SettingsActivity a) {
             super(a);
             activity = a;
-            for (int i = 0; i < pop.length; i++) pop[i] = new Spring(0.28f, 0.85f, 0);
-            HomeData.Weather wx = HomeData.get(a).weather;
-            Shaders.sky(scene.palette, System.currentTimeMillis(), wx.sunrise, wx.sunset);
-            scene.setMotion(0.5f, 0.2f);
-            scene.applyPalette();
             setFocusable(true);
             setContentDescription("Free My TV");
-            // TalkBack: one item per row, id = row + 1.
             spoken = new Spoken(this, new Spoken.Source() {
-                @Override public void items(List<Integer> out) { for (int i = 1; i <= rowCount(); i++) out.add(i); }
-                @Override public String text(int id) { return id >= 1 && id <= rowCount() ? rowText(id - 1) : ""; }
+                @Override public void items(List<Integer> out) {
+                    for (int i = 0; i < rows.size(); i++) if (rows.get(i).focusable()) out.add(i + 1);
+                }
+                @Override public String text(int id) { return id >= 1 && id <= rows.size() ? rowText(rows.get(id - 1)) : ""; }
                 @Override public boolean bounds(int id, Rect out) {
-                    if (id < 1 || id > rowCount()) return false;
-                    rowBox(id - 1).round(out);
+                    if (id < 1 || id > rows.size()) return false;
+                    Row r = rows.get(id - 1);
+                    out.set(Math.round(BODY_X * k), Math.round((LIST_TOP + r.y - scrollY) * k), Math.round(BODY_R * k), Math.round((LIST_TOP + r.y - scrollY + r.h) * k));
                     return true;
                 }
                 @Override public int focused() { return focus + 1; }
                 @Override public void focus(int id) {
                     focus = id - 1;
+                    scrollToFocus();
                     invalidate();
                 }
                 @Override public void click(int id) { activate(); }
@@ -193,72 +216,34 @@ public class SettingsActivity extends Activity {
             return spoken;
         }
 
-        /** A row as TalkBack reads it: its name and its value, as on screen. */
-        private String rowText(int row) {
-            switch (screen) {
-                case MAIN: {
-                    if (row == 0) {
-                        String busyText = state.optString("busy");
-                        String value = busy() ? (busyText.isEmpty() ? Ui.tr("Começando…", "Starting…") : busyText)
-                                : freeActive() ? "Free My TV" : Ui.tr("Original", "Original");
-                        return Ui.tr("Início, ", "Home Screen, ") + value;
-                    }
-                    String[] names = {Ui.tr("Tela de Descanso, ver agora", "Screensaver, preview"), Ui.tr("Ajustes do Início", "Home Settings"),
-                            Ui.tr("Prateleira", "Shelf"), Ui.tr("Botões do Controle", "Remote Buttons"), Ui.tr("Ajustes da TV", "TV Settings")};
-                    return row - 1 < names.length ? names[row - 1] : "";
-                }
-                case HOME_CHOICE: {
-                    String name = row == 0 ? "Free My TV, " + Ui.tr("sem anúncios, com a tela de descanso nova", "no ads, with the new screensaver")
-                            : "Original, " + Ui.tr("o Início de fábrica da TV", "the TV's factory home screen");
-                    boolean inUse = (row == 0) == freeActive();
-                    return name + (inUse ? Ui.tr(". Em uso", ". In use") : "") + ", " + (row + 1) + Ui.tr(" de 2", " of 2");
-                }
-                case HOME_SETTINGS:
-                case REMOTE_KEYS: {
-                    boolean keys = screen == REMOTE_KEYS;
-                    String[] labels = keys ? keyLabels() : settingLabels(), values = keys ? keyValues() : settingValues();
-                    return row < labels.length ? labels[row] + ", " + values[row] : "";
-                }
-                case PICKER: {
-                    int at = pickScroll + row;
-                    if (at >= pickLabels.size()) return "";
-                    return pickLabels.get(at) + (at == pickCurrent ? Ui.tr(", escolhido", ", selected") : "")
-                            + ", " + (at + 1) + Ui.tr(" de ", " of ") + pickLabels.size();
-                }
-                case SHELF_EDIT: {
-                    int at = pickScroll + row;
-                    if (at >= shelfRows.size()) return "";
-                    String[] app = shelfRows.get(at);
-                    int place = shelfOrder.indexOf(app[0]);
-                    return app[1] + ", " + (place >= 0 ? Ui.tr("na prateleira, posição ", "on the shelf, place ") + (place + 1)
-                            : Ui.tr("fora da prateleira", "not on the shelf"));
-                }
-                default:
-                    return "";
+        private String rowText(Row r) {
+            switch (r.type) {
+                case SEG: return r.label + ", " + r.opts[r.sel];
+                case SW: return r.label + ", " + (r.on ? "เปิด" : "ปิด");
+                case VAL: case INPUT: case SHELF: return r.label + (r.value == null || r.value.isEmpty() ? "" : ", " + r.value);
+                case CHECK: return r.label + (r.on ? ", เลือกอยู่" : "");
+                default: return r.label;
             }
         }
 
-        private RectF rowBox(int row) {
-            float top, height;
-            if (screen == MAIN) {
-                top = LIST_TOP + row * (ROW_H + ROW_GAP);
-                height = ROW_H;
-            } else if (screen == HOME_CHOICE) {
-                top = LIST_TOP + 20 + row * (CHOICE_H + ROW_GAP);
-                height = CHOICE_H;
-            } else {
-                top = LIST_TOP + 20 + row * (LIST_ROW_H + LIST_ROW_GAP);
-                height = LIST_ROW_H;
-            }
-            focusBox.set(LIST_X * k, top * k, LIST_R * k, (top + height) * k);
-            return focusBox;
+        /** Called after something outside this view changed a setting (the name dialog). */
+        void changed(String message) {
+            dirty = true;
+            toast(message);
+            invalidate();
+        }
+
+        void toast(String text) {
+            toastText = text;
+            toastAt = SystemClock.uptimeMillis();
+            invalidate();
+            announceForAccessibility(text);
         }
 
         void resume() {
             if (running) return;
             running = true;
-            startedAt = SystemClock.uptimeMillis();
-            lastNanos = 0;
+            lastFrame = 0;
             handler.post(poll);
             Choreographer.getInstance().postFrameCallback(this);
             spoken.readAgain();
@@ -270,11 +255,12 @@ public class SettingsActivity extends Activity {
             Choreographer.getInstance().removeFrameCallback(this);
         }
 
+        private long lastFrame;
+
         @Override public void doFrame(long frameTimeNanos) {
             if (!running) return;
-            boolean moving = busy();
-            for (Spring s : pop) moving |= !s.settled();
-            if (moving || SystemClock.uptimeMillis() - lastSky >= 100) invalidate();
+            boolean moving = Math.abs(scrollTarget - scrollY) > 0.5f || SystemClock.uptimeMillis() - toastAt < 2600 || busy();
+            if (moving) invalidate();
             Choreographer.getInstance().postFrameCallback(this);
         }
 
@@ -282,32 +268,32 @@ public class SettingsActivity extends Activity {
             w = width;
             h = height;
             k = w / 1920f;
-            scene.setSize(w, h);
-            title = Ui.text(Ui.displaySemibold, 50 * k, 0xFFFFFFFF);
-            title.setTextAlign(Paint.Align.CENTER);
-            subtitle = Ui.text(Ui.regular, 26 * k, 0x99FFFFFF);
-            subtitle.setTextAlign(Paint.Align.CENTER);
-            version = Ui.text(Ui.regular, 22 * k, 0x66FFFFFF);
-            version.setTextAlign(Paint.Align.CENTER);
-            rowLabel = Ui.text(Ui.medium, 30 * k, 0xF2FFFFFF);
-            rowValue = Ui.text(Ui.regular, 28 * k, 0x8CFFFFFF);
-            rowValue.setTextAlign(Paint.Align.RIGHT);
-            rowSub = Ui.text(Ui.regular, 23 * k, 0x8CFFFFFF);
-            header = Ui.text(Ui.semibold, 21 * k, 0x73FFFFFF);
-            header.setLetterSpacing(0.06f);
-            cellLabel = Ui.text(Ui.regular, 25 * k, 0xD9FFFFFF);
-            cellValue = Ui.numbers(Ui.regular, 25 * k, 0xD9FFFFFF);
-            cellValue.setTextAlign(Paint.Align.RIGHT);
-            warn = Ui.text(Ui.regular, 23 * k, AMBER);
-            notice = new TextPaint(Ui.text(Ui.regular, 23 * k, 0xB3FFFFFF));
-            spinner = new Paint(Paint.ANTI_ALIAS_FLAG);
-            spinner.setStyle(Paint.Style.STROKE);
-            spinner.setStrokeCap(Paint.Cap.ROUND);
-            spinner.setStrokeWidth(3.5f * k);
-            white = new Paint(Paint.ANTI_ALIAS_FLAG);
-            white.setColor(0xFFF5F5F7);
-            shadow = new Paint(Paint.ANTI_ALIAS_FLAG);
-            shadow.setMaskFilter(new BlurMaskFilter(22 * k, BlurMaskFilter.Blur.NORMAL));
+            sky = Lantern.pageSky(w, h);
+            markShader = null;
+            title = Ui.text(Ui.displayBold, 44 * k, Lantern.WHITE);
+            subtitle = Ui.text(Ui.regular, 19 * k, 0x80FFFFFF);
+            label = Ui.text(Ui.medium, 23 * k, Lantern.WHITE);
+            desc = Ui.text(Ui.regular, 15 * k, 0x73FFFFFF);
+            sec = Ui.text(Ui.semibold, 16 * k, Lantern.LANTERN);
+            sec.setLetterSpacing(0.02f);
+            val = Ui.text(Ui.regular, 20 * k, 0xB3FFFFFF);
+            val.setTextAlign(Paint.Align.RIGHT);
+            segOff = Ui.text(Ui.medium, 18 * k, 0x99FFFFFF);
+            segOn = Ui.text(Ui.displayBold, 18 * k, Lantern.ON_LANTERN);
+            inputText = Ui.text(Ui.regular, 21 * k, Lantern.WHITE);
+            inputText.setTextAlign(Paint.Align.RIGHT);
+            badge = Ui.numbers(Ui.medium, 16 * k, Lantern.DOWN);
+            rail = Ui.text(Ui.medium, 21 * k, 0x99FFFFFF);
+            railOn = Ui.text(Ui.medium, 21 * k, Lantern.WHITE);
+            brandTitle = Ui.text(Ui.displayBold, 26 * k, Lantern.WHITE);
+            brandSub = Ui.text(Ui.regular, 14 * k, 0x73FFFFFF);
+            railFoot = Ui.text(Ui.regular, 14 * k, 0x59FFFFFF);
+            foot = Ui.text(Ui.regular, 17 * k, 0x66FFFFFF);
+            kbd = Ui.numbers(Ui.regular, 14 * k, 0xB3FFFFFF);
+            toast = Ui.text(Ui.medium, 23 * k, Lantern.WHITE);
+            warn = Ui.text(Ui.regular, 15 * k, 0xFFFFB4AE);
+            line.setStyle(Paint.Style.STROKE);
+            dirty = true;
         }
 
         private boolean busy() {
@@ -318,260 +304,444 @@ public class SettingsActivity extends Activity {
             return HomeMode.FREE.equals(state.optString("mode")) && !state.optBoolean("homeReverted");
         }
 
-        private int rowCount() {
+        // MARK: - Rows
+
+        private Row row(int type, String key, String text, String description) {
+            Row r = new Row();
+            r.type = type;
+            r.key = key;
+            r.label = text;
+            r.desc = description;
+            rows.add(r);
+            return r;
+        }
+
+        private int sectionNo;
+
+        private void section(String name) {
+            Row r = row(SECTION, null, name, null);
+            r.section = sectionNo++;
+        }
+
+        private Row seg(String key, String text, String description, String[] opts, int sel) {
+            Row r = row(SEG, key, text, description);
+            r.opts = opts;
+            r.sel = Math.max(0, Math.min(opts.length - 1, sel));
+            return r;
+        }
+
+        private Row sw(String key, String text, String description, boolean on) {
+            Row r = row(SW, key, text, description);
+            r.on = on;
+            return r;
+        }
+
+        private Row value(String key, String text, String description, String value, boolean chevron) {
+            Row r = row(VAL, key, text, description);
+            r.value = value;
+            r.chevron = chevron;
+            return r;
+        }
+
+        /** Rebuilds the list for the current screen (when something it shows changed). */
+        private void build() {
+            Row focused = focus >= 0 && focus < rows.size() ? rows.get(focus) : null;
+            String focusKey = focused == null ? null : focused.key;
+            rows.clear();
+            sectionNo = 0;
             switch (screen) {
-                case MAIN: return 6;
-                case HOME_CHOICE: return 2;
-                case HOME_SETTINGS: return settingLabels().length;
-                case PICKER: return Math.min(PICK_VISIBLE, pickLabels.size());
-                case SHELF_EDIT: return Math.min(PICK_VISIBLE, shelfRows.size());
-                default: return Prefs.KEYS.length;
+                case REMOTE_KEYS: buildKeys(); break;
+                case PICKER: buildPicker(); break;
+                case SHELF_EDIT: buildShelf(); break;
+                default: buildMain(); break;
+            }
+            layout();
+            if (focusKey != null) {
+                for (int i = 0; i < rows.size(); i++) if (focusKey.equals(rows.get(i).key)) { focus = i; break; }
+            }
+            if (focus >= rows.size() || focus < 0 || !rows.get(focus).focusable()) focus = firstFocusable();
+            dirty = false;
+        }
+
+        private int firstFocusable() {
+            for (int i = 0; i < rows.size(); i++) if (rows.get(i).focusable()) return i;
+            return 0;
+        }
+
+        private void buildMain() {
+            Context c = getContext();
+            String busyText = state.optString("busy"), error = state.optString("error");
+            section("ทั่วไป");
+            Row name = row(INPUT, "name", "ชื่อที่แสดง", "ใช้ขึ้นต้นในคำทักทายบนหน้าโฮมและพักหน้าจอ");
+            name.value = Prefs.name();
+            seg("greet", "คำทักทาย", "ใช้กับหน้าโฮม พักหน้าจอ และ All Apps", Thai.GREETINGS, Prefs.greet());
+            Row home = seg("home", "หน้าโฮม", "สลับไปมาได้อย่างปลอดภัย ไม่ถอนการติดตั้งใดๆ",
+                    new String[] {"Free My TV", "ดั้งเดิม (Original)"}, freeActive() ? 0 : 1);
+            if (busy()) home.desc = busyText.isEmpty() ? "กำลังสลับ…" : busyText;
+            else if (!error.isEmpty()) {
+                home.desc = error;
+                home.warn = true;
+            }
+            seg("theme", "ธีม", "อัตโนมัติเปลี่ยนตามพระอาทิตย์ตกจริง", new String[] {"อัตโนมัติ", "กลางวัน", "กลางคืน"},
+                    java.util.Arrays.asList(THEMES).indexOf(Prefs.theme()));
+            section("สภาพอากาศ & ราคา");
+            value("city", "เมือง", "ตั้งใน config.properties (latitude, longitude, city)", Prefs.city().isEmpty() ? "—" : Prefs.city(), false);
+            seg("temp", "หน่วยอุณหภูมิ", null, new String[] {"°C", "°F", "อัตโนมัติ"}, java.util.Arrays.asList(UNITS).indexOf(Prefs.temperature()));
+            sw("crypto", "แสดงราคาคริปโต", "BTC / ETH / SOL บนหน้าโฮมและพักหน้าจอ", Prefs.quotes());
+            section("การ์ดบนหน้าโฮม");
+            sw("cweather", "การ์ดสภาพอากาศ + AQI", null, Prefs.cardWeather());
+            sw("ccal", "การ์ด Google Calendar", "ใส่ลิงก์ .ics ใน config.properties (ical_url)", Prefs.cardCalendar());
+            sw("csys", "การ์ดสถานะเครื่อง (RAM / CPU)", "กด OK ที่การ์ดบนหน้าโฮมเพื่อล้าง RAM", Prefs.cardSystem());
+            section("ชั้นแอป & รีโมท");
+            value("shelf", "จัดการชั้นแอป", null, HomeApps.shelfPackages(c).size() + " แอป", true);
+            value("remote", "ปุ่มรีโมท TCL", "Netflix · YouTube · Prime · TCL Channel", RemoteKeys.supported() ? "" : "ไม่ใช้กับทีวีรุ่นนี้", true);
+            section("ระบบ");
+            value("saver", "พักหน้าจอ", "ดูตัวอย่างตอนนี้", "", true);
+            value("tv", "ตั้งค่าทีวี", "ภาพ เสียง เครือข่าย ของระบบ", "", true);
+            row(DANGER, "reset", "กลับสู่หน้าโฮมเดิม (Original)", "คืนโฮม/พักหน้าจอ/แอปทุกอย่างกลับเหมือนโรงงาน");
+            value("version", "เวอร์ชัน", null, versionName(c), false);
+        }
+
+        private void buildKeys() {
+            section("ปุ่มรีโมท TCL");
+            String[] labels = keyLabels(), values = keyValues();
+            for (int i = 0; i < labels.length; i++) value("key" + i, labels[i], null, values[i], true);
+            row(NOTE, null, RemoteKeys.supported() ? "Disney และ Globoplay: ทีวีควบคุมสองปุ่มนั้นเอง"
+                    : "เหล่านี้คือปุ่มรีโมทของ TCL: บนทีวีเครื่องนี้ปุ่มทำงานตามปกติ", null);
+        }
+
+        private void buildPicker() {
+            section(keyLabels()[pickFor - 1]);
+            for (int i = 0; i < pickLabels.size(); i++) {
+                Row r = row(CHECK, "pick" + i, pickLabels.get(i), null);
+                r.on = i == pickCurrent;
             }
         }
+
+        private void buildShelf() {
+            section("จัดการชั้นแอป");
+            for (String[] app : shelfRows) {
+                int place = shelfOrder.indexOf(app[0]);
+                Row r = row(SHELF, app[0], app[1], null);
+                r.on = place >= 0;
+                r.value = place >= 0 ? "#" + (place + 1) : "นอกชั้น";
+            }
+            row(NOTE, null, "OK เพิ่ม/เอาออก (สูงสุด " + HomeApps.MAX_SHELF + " แอป) · ← → เปลี่ยนลำดับ", null);
+        }
+
+        /** Positions of the rows in the list's own coordinates (1920 grid, before scrolling). */
+        private void layout() {
+            float y = 0;
+            for (Row r : rows) {
+                if (r.type == SECTION) {
+                    y += y == 0 ? 0 : 30;
+                    r.y = y;
+                    r.h = 24;
+                    y += 24 + 12;
+                } else if (r.type == NOTE) {
+                    r.y = y + 6;
+                    r.h = 30;
+                    y += 46;
+                } else {
+                    boolean twoLines = r.desc != null && !r.desc.isEmpty();
+                    r.h = twoLines ? 94 : 76;
+                    r.y = y;
+                    y += r.h + 8;
+                }
+            }
+            contentH = y + 24;
+            scrollToFocus();
+        }
+
+        private void scrollToFocus() {
+            if (focus < 0 || focus >= rows.size()) return;
+            Row r = rows.get(focus);
+            float view = LIST_BOTTOM - LIST_TOP, pad = 20;
+            float top = r.y - pad, bottom = r.y + r.h + pad;
+            if (top < scrollTarget) scrollTarget = top;
+            else if (bottom > scrollTarget + view) scrollTarget = bottom - view;
+            // The first rows keep their section title in view.
+            if (focus <= 2) scrollTarget = 0;
+            scrollTarget = Math.max(0, Math.min(Math.max(0, contentH - view), scrollTarget));
+        }
+
+        // MARK: - Drawing
 
         @Override protected void onDraw(Canvas c) {
             if (w == 0) return;
-            long now = System.nanoTime();
-            float dt = lastNanos == 0 ? 1 / 60f : Math.min(0.05f, (now - lastNanos) / 1e9f);
-            lastNanos = now;
-            for (int i = 0; i < pop.length; i++) {
-                pop[i].target = i == focus && i < rowCount() ? 1 : 0;
-                pop[i].step(dt);
-            }
-            long up = SystemClock.uptimeMillis();
-            float seconds = (up - startedAt) / 1000f;
-            if (up - lastSky >= 100) {
-                lastSky = up;
-                scene.advance(seconds);
-            }
-            scene.drawBackground(c);
+            if (dirty) build();
+            scrollY += (scrollTarget - scrollY) * 0.28f;
+            if (Math.abs(scrollTarget - scrollY) < 0.5f) scrollY = scrollTarget;
 
-            // On the left: big symbol, title, description.
-            float cx = 500 * k;
-            Symbols.draw(getContext(), c, "sparkles", cx, 400 * k, 150 * k, 0xEBFFFFFF);
-            c.drawText("Free My TV", cx, 612 * k, title);
-            c.drawText(Ui.tr("Início e tela de descanso da TV", "Your TV's home screen and screensaver"), cx, 660 * k, subtitle);
-            c.drawText(versionName(getContext()), cx, 704 * k, version);
+            fill.setColor(0xFF000000);   // a shader is painted through the paint's alpha: reset it first
+            fill.setShader(sky);
+            c.drawRect(0, 0, w, h, fill);
+            fill.setShader(null);
+            drawRail(c);
+            drawHeader(c);
 
-            if (screen == MAIN) drawMain(c, seconds); else if (screen == HOME_CHOICE) drawChoice(c); else if (screen == PICKER) drawPicker(c); else if (screen == SHELF_EDIT) drawShelfEditor(c); else drawList(c);
+            c.save();
+            c.clipRect(BODY_X * k - 30 * k, LIST_TOP * k, w, LIST_BOTTOM * k);
+            c.translate(0, (LIST_TOP - scrollY) * k);
+            for (int i = 0; i < rows.size(); i++) {
+                Row r = rows.get(i);
+                float top = (LIST_TOP + r.y - scrollY) * k;
+                if (top > LIST_BOTTOM * k || top + r.h * k < LIST_TOP * k - 20 * k) continue;
+                drawRow(c, r, i == focus);
+            }
+            c.restore();
+            drawFoot(c);
+            drawToast(c);
         }
 
-        private void drawMain(Canvas c, float seconds) {
-            boolean working = busy();
-            String busyText = state.optString("busy");
-            String mode = freeActive() ? "Free My TV" : Ui.tr("Original", "Original");
-            String[] labels = {Ui.tr("Início", "Home Screen"), Ui.tr("Tela de Descanso", "Screensaver"),
-                    Ui.tr("Ajustes do Início", "Home Settings"), Ui.tr("Prateleira", "Shelf"),
-                    Ui.tr("Botões do Controle", "Remote Buttons"), Ui.tr("Ajustes da TV", "TV Settings")};
-            String[] values = {working ? "" : mode, Ui.tr("Ver agora", "Preview"), "", "", "", ""};
-            for (int i = 0; i < 6; i++) {
-                float y = (LIST_TOP + i * (ROW_H + ROW_GAP)) * k;
-                rowRect.set(LIST_X * k, y, LIST_R * k, y + ROW_H * k);
-                float f = drawRowBackground(c, i);
-                int ink = blend(0xF2FFFFFF, INK, f);
-                rowLabel.setColor(ink);
-                float base = rowRect.centerY() + Ui.halfCap(rowLabel);
-                c.drawText(labels[i], rowRect.left + 30 * k, base, rowLabel);
-                float right = rowRect.right - 30 * k;
-                if (i >= 2) {
-                    float cw = Symbols.width(getContext(), "chevron_right", 22 * k);
-                    Symbols.draw(getContext(), c, "chevron_right", right - cw / 2, rowRect.centerY(), 22 * k, blend(0x66FFFFFF, 0x991C1C1E, f));
-                } else if (i == 0 && working) {
-                    // Switching: the current step in place of the value, with the spinning arc.
-                    String text = busyText.isEmpty() ? Ui.tr("Começando…", "Starting…") : busyText;
-                    rowValue.setColor(blend(0xB3FFFFFF, 0xB31C1C1E, f));
-                    String shown = TextUtils.ellipsize(text, new TextPaint(rowValue), 470 * k, TextUtils.TruncateAt.END).toString();
-                    c.drawText(shown, right, base, rowValue);
-                    float sx = right - rowValue.measureText(shown) - 26 * k;
-                    spinner.setColor(blend(0xFFFFFFFF, INK, f));
-                    Ui.spinner(c, sx, rowRect.centerY(), 12 * k, seconds * 1.3f, spinner);
-                } else {
-                    rowValue.setColor(blend(0x8CFFFFFF, 0x8C1C1C1E, f));
-                    c.drawText(values[i], right, base, rowValue);
+        private void drawRail(Canvas c) {
+            fill.setColor(0x38000000);
+            c.drawRect(0, 0, RAIL_W * k, h, fill);
+            fill.setColor(0x14FFFFFF);
+            c.drawRect(RAIL_W * k - k, 0, RAIL_W * k, h, fill);
+            // Brand: the lantern tile and the names.
+            float bx = 40 * k, by = 56 * k, bs = 40 * k;
+            if (markShader == null) {
+                SweepGradient g = new SweepGradient(bx + bs / 2, by + bs / 2,
+                        new int[] {Lantern.LANTERN, 0xFFCC9944, 0xFF7A1E2A, Lantern.LANTERN}, new float[] {0f, .3f, .7f, 1f});
+                android.graphics.Matrix m = new android.graphics.Matrix();
+                m.setRotate(120, bx + bs / 2, by + bs / 2);
+                g.setLocalMatrix(m);
+                markShader = g;
+            }
+            fill.setColor(0xFF000000);
+            fill.setShader(markShader);
+            box.set(bx, by, bx + bs, by + bs);
+            c.drawRoundRect(box, 12 * k, 12 * k, fill);
+            fill.setShader(null);
+            c.drawText("Free My TV", Math.round(bx + bs + 14 * k), Math.round(by + 13 * k + Ui.halfCap(brandTitle)), brandTitle);
+            c.drawText("การตั้งค่า · " + versionName(getContext()).replace("Free My TV ", "v") + " (th-YTC)", Math.round(bx + bs + 14 * k), Math.round(by + 44 * k), brandSub);
+            // Navigation: the section that holds the focused row is lit.
+            String[] names = {"ทั่วไป", "อากาศ & ราคา", "การ์ด", "ชั้นแอป & รีโมท", "ระบบ"};
+            String[] icons = {"home", "cloud", "cards", "remote", "gear"};
+            int active = screen == MAIN && focus >= 0 && focus < rows.size() ? sectionOf(focus) : 3;
+            float ny = 56 * k + 40 * k + 48 * k;
+            for (int i = 0; i < names.length; i++) {
+                boolean on = i == active;
+                float rowH = 58 * k;
+                box.set(40 * k - 16 * k + 16 * k, ny, RAIL_W * k - 40 * k, ny + rowH);
+                if (on) {
+                    fill.setColor(0x12FFFFFF);
+                    c.drawRoundRect(box, 14 * k, 14 * k, fill);
+                }
+                Icons.draw(c, icons[i], box.left + 16 * k + 12 * k, box.centerY(), 24 * k, on ? Lantern.LANTERN : 0x99FFFFFF, true);
+                Paint p = on ? railOn : rail;
+                c.drawText(names[i], Math.round(box.left + 16 * k + 24 * k + 14 * k), Math.round(box.centerY() + Ui.halfCap(p)), p);
+                ny += rowH + 6 * k;
+            }
+            String[] lines = {"ค่าที่เปลี่ยนบนทีวีจะมีผล", "เหนือ config.properties"};
+            for (int i = 0; i < lines.length; i++) c.drawText(lines[i], Math.round(40 * k), Math.round(h - 56 * k - (lines.length - 1 - i) * 22 * k), railFoot);
+        }
+
+        private int sectionOf(int index) {
+            int s = 0;
+            for (int i = 0; i <= index && i < rows.size(); i++) if (rows.get(i).type == SECTION) s = rows.get(i).section;
+            return s;
+        }
+
+        private void drawHeader(Canvas c) {
+            String t = screen == MAIN ? "การตั้งค่า" : screen == SHELF_EDIT ? "จัดการชั้นแอป" : screen == PICKER ? keyLabels()[pickFor - 1] : "ปุ่มรีโมท TCL";
+            String s = screen == MAIN ? "ตั้งค่าทั้งหมดได้บนจอทีวีนี้อันเดียว ไม่ต้องแตะคอมพิวเตอร์"
+                    : screen == PICKER ? "เลือกแอปที่ปุ่มนี้จะเปิด" : screen == SHELF_EDIT ? "เลือกแอปบนชั้นหน้าโฮมและจัดลำดับ" : "เลือกแอปที่แต่ละปุ่มบนรีโมทจะเปิด";
+            c.drawText(t, Math.round(BODY_X * k), Math.round(52 * k + 44 * k * 0.82f), title);
+            c.drawText(s, Math.round(BODY_X * k), Math.round(52 * k + 44 * k + 30 * k), subtitle);
+        }
+
+        private void drawFoot(Canvas c) {
+            float x = BODY_X * k, y = 1042 * k;
+            String[][] parts = {{"↑↓", " เลื่อน"}, {"←→", " เปลี่ยนค่า"}, {"OK", " สลับ"}, {"Back", " กลับ"}};
+            for (int i = 0; i < parts.length; i++) {
+                float kw = kbd.measureText(parts[i][0]) + 18 * k;
+                box.set(x, y - 22 * k, x + kw, y + 6 * k);
+                fill.setColor(0x14FFFFFF);
+                c.drawRoundRect(box, 7 * k, 7 * k, fill);
+                line.setStrokeWidth(k);
+                line.setColor(0x24FFFFFF);
+                c.drawRoundRect(box, 7 * k, 7 * k, line);
+                c.drawText(parts[i][0], Math.round(x + 9 * k), Math.round(y - 8 * k + Ui.halfCap(kbd)), kbd);
+                x += kw;
+                String after = parts[i][1] + (i < parts.length - 1 ? "  ·  " : "");
+                c.drawText(after, Math.round(x), Math.round(y - 8 * k + Ui.halfCap(foot)), foot);
+                x += foot.measureText(after);
+            }
+        }
+
+        private void drawToast(Canvas c) {
+            long age = SystemClock.uptimeMillis() - toastAt;
+            if (toastText.isEmpty() || age > 2400) return;
+            float a = age < 300 ? age / 300f : age > 2000 ? Math.max(0, (2400 - age) / 400f) : 1;
+            float tw = toast.measureText(toastText), bw = tw + 52 * k, bh = 62 * k;
+            float x = (w - bw) / 2f, y = h - 120 * k - bh;
+            box.set(x, y, x + bw, y + bh);
+            fill.setColor(Ui.alpha(0xEB0C0E18, a));
+            c.drawRoundRect(box, 18 * k, 18 * k, fill);
+            line.setStrokeWidth(k);
+            line.setColor(Ui.alpha(0x29FFFFFF, a));
+            c.drawRoundRect(box, 18 * k, 18 * k, line);
+            toast.setAlpha(Math.round(255 * a));
+            c.drawText(toastText, Math.round(x + 26 * k), Math.round(box.centerY() + Ui.halfCap(toast)), toast);
+            toast.setAlpha(255);
+        }
+
+        private void drawRow(Canvas c, Row r, boolean focused) {
+            float x = BODY_X * k, right = BODY_R * k, top = r.y * k, hh = r.h * k;
+            if (r.type == SECTION) {
+                c.drawText(r.label, Math.round(x + 2 * k), Math.round(top + 12 * k + Ui.halfCap(sec)), sec);
+                return;
+            }
+            if (r.type == NOTE) {
+                desc.setAlpha(255);
+                c.drawText(r.label, Math.round(x + 4 * k), Math.round(top + 15 * k + Ui.halfCap(desc)), foot);
+                return;
+            }
+            box.set(x, top, right, top + hh);
+            boolean danger = r.type == DANGER;
+            fill.setColor(focused ? 0x12FFFFFF : 0x09FFFFFF);
+            c.drawRoundRect(box, 16 * k, 16 * k, fill);
+            line.setStrokeWidth(k);
+            line.setColor(0x0FFFFFFF);
+            box2.set(box);
+            box2.inset(k / 2f, k / 2f);
+            c.drawRoundRect(box2, 16 * k, 16 * k, line);
+            if (focused) {
+                line.setStrokeWidth(4 * k);
+                line.setColor(danger ? Lantern.DOWN : Lantern.WHITE);
+                box2.set(box);
+                box2.inset(-2 * k, -2 * k);
+                c.drawRoundRect(box2, 18 * k, 18 * k, line);
+            }
+            // The words.
+            label.setColor(danger ? 0xFFFFB4AE : Lantern.WHITE);
+            boolean two = r.desc != null && !r.desc.isEmpty();
+            float cy = box.centerY(), reserve = controlWidth(r) + 60 * k;
+            float textW = right - x - 44 * k - reserve;
+            float labelBase = two ? top + 34 * k + Ui.halfCap(label) - 8 * k : cy + Ui.halfCap(label);
+            c.drawText(TextUtils.ellipsize(r.label, new TextPaint(label), textW, TextUtils.TruncateAt.END).toString(),
+                    Math.round(x + 22 * k), Math.round(labelBase), label);
+            if (two) {
+                Paint p = r.warn ? warn : desc;
+                c.drawText(TextUtils.ellipsize(r.desc, new TextPaint(p), textW, TextUtils.TruncateAt.END).toString(),
+                        Math.round(x + 22 * k), Math.round(top + 64 * k + Ui.halfCap(p)), p);
+            }
+            drawControl(c, r, right - 22 * k, cy);
+        }
+
+        private float segWidth(Row r) {
+            float total = 8 * k;
+            for (int i = 0; i < r.opts.length; i++) total += segOn.measureText(r.opts[i]) + 32 * k + (i > 0 ? 4 * k : 0);
+            return total;
+        }
+
+        private float controlWidth(Row r) {
+            switch (r.type) {
+                case SEG: return segWidth(r);
+                case SW: return 74 * k;
+                case INPUT: return 280 * k;
+                case VAL: return (r.value == null ? 0 : val.measureText(r.value)) + (r.chevron ? 34 * k : 0);
+                case DANGER: return badge.measureText("กลับหน้าเดิม") + 28 * k;
+                case CHECK: return 28 * k;
+                case SHELF: return val.measureText(r.value == null ? "" : r.value);
+                default: return 0;
+            }
+        }
+
+        private void drawControl(Canvas c, Row r, float right, float cy) {
+            switch (r.type) {
+                case SW: {
+                    box.set(right - 74 * k, cy - 20 * k, right, cy + 20 * k);
+                    fill.setColor(r.on ? Lantern.UP : 0x24FFFFFF);
+                    c.drawRoundRect(box, 20 * k, 20 * k, fill);
+                    fill.setColor(Lantern.WHITE);
+                    float kx = box.left + 5 * k + (r.on ? 34 * k : 0);
+                    c.drawCircle(kx + 15 * k, cy, 15 * k, fill);
+                    break;
+                }
+                case SEG: {
+                    float sw = segWidth(r);
+                    box.set(right - sw, cy - 26 * k, right, cy + 26 * k);
+                    fill.setColor(0x14FFFFFF);
+                    c.drawRoundRect(box, 14 * k, 14 * k, fill);
+                    line.setStrokeWidth(k);
+                    line.setColor(0x1AFFFFFF);
+                    box2.set(box);
+                    box2.inset(k / 2f, k / 2f);
+                    c.drawRoundRect(box2, 14 * k, 14 * k, line);
+                    float x = box.left + 4 * k;
+                    for (int i = 0; i < r.opts.length; i++) {
+                        float bw = segOn.measureText(r.opts[i]) + 32 * k;
+                        if (i == r.sel) {
+                            box2.set(x, cy - 22 * k, x + bw, cy + 22 * k);
+                            fill.setColor(Lantern.LANTERN);
+                            c.drawRoundRect(box2, 10 * k, 10 * k, fill);
+                        }
+                        Paint p = i == r.sel ? segOn : segOff;
+                        c.drawText(r.opts[i], Math.round(x + 16 * k), Math.round(cy + Ui.halfCap(p)), p);
+                        x += bw + 4 * k;
+                    }
+                    break;
+                }
+                case INPUT: {
+                    box.set(right - 280 * k, cy - 26 * k, right, cy + 26 * k);
+                    fill.setColor(0x0FFFFFFF);
+                    c.drawRoundRect(box, 12 * k, 12 * k, fill);
+                    line.setStrokeWidth(k);
+                    line.setColor(0x24FFFFFF);
+                    box2.set(box);
+                    box2.inset(k / 2f, k / 2f);
+                    c.drawRoundRect(box2, 12 * k, 12 * k, line);
+                    c.drawText(TextUtils.ellipsize(r.value == null ? "" : r.value, new TextPaint(inputText), 250 * k, TextUtils.TruncateAt.END).toString(),
+                            Math.round(right - 14 * k), Math.round(cy + Ui.halfCap(inputText)), inputText);
+                    break;
+                }
+                case DANGER: {
+                    String t = "กลับหน้าเดิม";
+                    float bw = badge.measureText(t) + 28 * k;
+                    box.set(right - bw, cy - 18 * k, right, cy + 18 * k);
+                    line.setStrokeWidth(k);
+                    line.setColor(0x80FF453A);
+                    c.drawRoundRect(box, 12 * k, 12 * k, line);
+                    c.drawText(t, Math.round(box.left + 14 * k), Math.round(cy + Ui.halfCap(badge)), badge);
+                    break;
+                }
+                case CHECK:
+                    if (r.on) Icons.draw(c, "check", right - 12 * k, cy, 26 * k, Lantern.LANTERN, true);
+                    break;
+                case SHELF: {
+                    val.setColor(r.on ? Lantern.LANTERN : 0x80FFFFFF);
+                    c.drawText(r.value, Math.round(right), Math.round(cy + Ui.halfCap(val)), val);
+                    val.setColor(0xB3FFFFFF);
+                    break;
+                }
+                default: { // VAL
+                    float x = right;
+                    if (r.chevron) {
+                        Icons.draw(c, "chevron", right - 10 * k, cy, 22 * k, 0x66FFFFFF, true);
+                        x -= 34 * k;
+                    }
+                    if (r.value != null && !r.value.isEmpty()) c.drawText(r.value, Math.round(x), Math.round(cy + Ui.halfCap(val)), val);
+                    break;
                 }
             }
-
-            float y = (LIST_TOP + 6 * (ROW_H + ROW_GAP) + 20) * k;
-            String error = state.optString("error");
-            if (working && (busyText.contains("Permitir") || busyText.contains("Allow"))) {
-                c.drawText(Ui.tr("Na TV: marque “Sempre permitir” e aperte OK.", "On the TV: tick “Always allow” and press OK."),
-                        LIST_X * k + 30 * k, y, warn);
-                y += 46 * k;
-            } else if (!working && !error.isEmpty()) {
-                // The whole message, on up to five lines: some say what to do (the Wi-Fi one, #14).
-                int width = Math.round(760 * k);
-                if (errorLayout == null || !error.equals(errorShown) || errorLayout.getWidth() != width) {
-                    errorShown = error;
-                    errorLayout = StaticLayout.Builder.obtain(error, 0, error.length(), new TextPaint(warn), width)
-                            .setMaxLines(5).setEllipsize(TextUtils.TruncateAt.END).build();
-                }
-                c.save();
-                c.translate(LIST_X * k + 30 * k, y - errorLayout.getLineBaseline(0));
-                errorLayout.draw(c);
-                c.restore();
-                y += errorLayout.getLineBaseline(errorLayout.getLineCount() - 1) - errorLayout.getLineBaseline(0) + 46 * k;
-            }
-            y = drawComparison(c, y);
-            y = drawRecs(c, y + 26 * k);
-            drawNotices(c, y + 40 * k);
         }
 
-        /** Home screen picks: status, and the credit TMDB asks for. */
-        private float drawRecs(Canvas c, float y) {
-            float x = LIST_X * k + 30 * k;
-            c.drawText(Ui.tr("RECOMENDAÇÕES", "RECOMMENDATIONS"), x, y, header);
-            String line;
-            String error = recs.optString("error");
-            int count = recs.optInt("count");
-            if (!hasKey) line = Ui.tr("Sem chave do TMDB: veja o README (config.properties).", "No TMDB key: see the README (config.properties).");
-            else if (!error.isEmpty()) line = Ui.tr("Erro: ", "Error: ") + error + ".";
-            else if (count > 0) line = Ui.tr("Ligadas · " + count + " títulos nos apps da TV, 3 novos a cada hora.",
-                    "On · " + count + " titles from the TV's apps, 3 new ones every hour.");
-            else line = Ui.tr("Buscando os títulos…", "Fetching titles…");
-            c.drawText(TextUtils.ellipsize(line, notice, 790 * k, TextUtils.TruncateAt.END).toString(), x, y + 42 * k, notice);
-            version.setTextAlign(Paint.Align.LEFT);
-            c.drawText(Ui.tr("Usa a API do TMDB, sem endosso ou certificação do TMDB.",
-                    "This product uses the TMDB API but is not endorsed or certified by TMDB."), x, y + 78 * k, version);
-            version.setTextAlign(Paint.Align.CENTER);
-            return y + 78 * k;
-        }
-
-        /** List row: no background; focused, white with a shadow (the Apple TV focus). Returns how focused it is. */
-        private float drawRowBackground(Canvas c, int i) {
-            float f = Ui.clamp(pop[i].value);
-            if (f > 0.01f) {
-                float s = 1 + 0.02f * f;
-                float cx = rowRect.centerX(), cy = rowRect.centerY();
-                tmp.set(cx - rowRect.width() * s / 2, cy - rowRect.height() * s / 2, cx + rowRect.width() * s / 2, cy + rowRect.height() * s / 2);
-                float r = 18 * k * s;
-                tmp.offset(0, 10 * k * f);
-                shadow.setColor(Ui.alpha(0xFF000000, 0.4f * f));
-                c.drawRoundRect(tmp, r, r, shadow);
-                tmp.offset(0, -10 * k * f);
-                white.setAlpha(Math.round(255 * f));
-                c.drawRoundRect(tmp, r, r, white);
-                rowRect.set(tmp);
-            }
-            return f;
-        }
-
-        private float drawComparison(Canvas c, float y) {
-            float x = LIST_X * k + 30 * k, colA = LIST_R * k - 220 * k, colB = LIST_R * k - 30 * k;
-            c.drawText(Ui.tr("COMPARAÇÃO", "COMPARISON"), x, y, header);
-            cellValue.setColor(0x73FFFFFF);
-            c.drawText("Original", colA, y, cellValue);
-            c.drawText("Free My TV", colB, y, cellValue);
-            cellValue.setColor(0xD9FFFFFF);
-            JSONObject metrics = state.optJSONObject("metrics");
-            JSONObject a = metrics == null ? null : metrics.optJSONObject(HomeMode.ORIGINAL);
-            JSONObject b = metrics == null ? null : metrics.optJSONObject(HomeMode.FREE);
-            String[][] rows = {{Ui.tr("Botão Início", "Home button"), "homeMs"}, {Ui.tr("Memória livre", "Free memory"), "memAvailableMB"},
-                    {Ui.tr("Memória do Início", "Home screen memory"), "homePssMB"}};
-            for (int i = 0; i < rows.length; i++) {
-                float base = y + (46 + 40 * i) * k;
-                c.drawText(rows[i][0], x, base, cellLabel);
-                c.drawText(metric(a, rows[i][1]), colA, base, cellValue);
-                c.drawText(metric(b, rows[i][1]), colB, base, cellValue);
-            }
-            return y + (46 + 40 * rows.length) * k;
-        }
-
-        private void drawNotices(Canvas c, float y) {
-            float x = LIST_X * k + 30 * k;
-            c.drawText(Ui.tr("AVISOS", "NOTICES"), x, y, header);
-            JSONArray notices = state.optJSONArray("notices");
-            int shown = 0;
-            for (int i = 0; notices != null && i < notices.length() && shown < 2; i++) {
-                JSONObject o = notices.optJSONObject(i);
-                if (o == null) continue;
-                String line = ago(o.optLong("at")) + " · " + o.optString("text");
-                c.drawText(TextUtils.ellipsize(line, notice, 790 * k, TextUtils.TruncateAt.END).toString(), x, y + (42 + 38 * shown) * k, notice);
-                shown++;
-            }
-            if (shown == 0) c.drawText(Ui.tr("Nenhum ainda.", "None yet."), x, y + 42 * k, notice);
-        }
-
-        /** Home screen choice: Free My TV or the original, with a check on the one in use. */
-        private void drawChoice(Canvas c) {
-            Paint heading = Ui.text(Ui.displaySemibold, 34 * k, 0xFFFFFFFF);
-            c.drawText(Ui.tr("Início", "Home Screen"), LIST_X * k + 30 * k, (LIST_TOP - 24) * k, heading);
-            String[][] options = {{"Free My TV", Ui.tr("Sem anúncios, com a tela de descanso nova", "No ads, with the new screensaver")},
-                    {"Original", Ui.tr("O Início de fábrica da TV", "The TV's factory home screen")}};
-            int current = freeActive() ? 0 : 1;
-            for (int i = 0; i < 2; i++) {
-                float y = (LIST_TOP + 20 + i * (CHOICE_H + ROW_GAP)) * k;
-                rowRect.set(LIST_X * k, y, LIST_R * k, y + CHOICE_H * k);
-                float f = drawRowBackground(c, i);
-                rowLabel.setColor(blend(0xF2FFFFFF, INK, f));
-                rowSub.setColor(blend(0x8CFFFFFF, 0x991C1C1E, f));
-                c.drawText(options[i][0], rowRect.left + 30 * k, rowRect.top + 44 * k, rowLabel);
-                c.drawText(options[i][1], rowRect.left + 30 * k, rowRect.top + 80 * k, rowSub);
-                if (i == current) {
-                    float cw = Symbols.width(getContext(), "check", 26 * k);
-                    Symbols.draw(getContext(), c, "check", rowRect.right - 30 * k - cw / 2, rowRect.centerY(), 26 * k, blend(0xFFFFFFFF, INK, f));
-                }
-            }
-            Paint hint = Ui.text(Ui.regular, 23 * k, 0x8CFFFFFF);
-            c.drawText(Ui.tr("A troca leva uns segundos e a tela pisca nas medições.",
-                    "Switching takes a few seconds; the screen blinks while it measures."), LIST_X * k + 30 * k,
-                    (LIST_TOP + 20 + 2 * (CHOICE_H + ROW_GAP) + 40) * k, hint);
-        }
-
-        private static int blend(int a, int b, float f) {
-            int aa = a >>> 24, ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
-            int ba = b >>> 24, br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
-            return (Math.round(aa + (ba - aa) * f) << 24) | (Math.round(ar + (br - ar) * f) << 16)
-                    | (Math.round(ag + (bg - ag) * f) << 8) | Math.round(ab + (bb - ab) * f);
-        }
-
-        private static String metric(JSONObject m, String key) {
-            if (m == null || !m.has(key)) return "—";
-            long v = m.optLong(key);
-            if (key.equals("homeMs")) return v + " ms";
-            if (key.equals("memAvailableMB") && v >= 1024) return String.format(Ui.locale(), "%.2f GB", v / 1024.0);
-            return v + " MB";
-        }
-
-        private static String ago(long at) {
-            long minutes = Math.max(0, (System.currentTimeMillis() - at) / 60_000);
-            if (minutes < 1) return Ui.tr("agora", "now");
-            if (minutes < 60) return Ui.tr("há " + minutes + " min", minutes + " min ago");
-            if (minutes < 48 * 60) return Ui.tr("há " + (minutes / 60) + " h", (minutes / 60) + " h ago");
-            return Ui.tr("há " + (minutes / 1440) + " dias", (minutes / 1440) + " days ago");
-        }
-
-        private static String versionName(Context c) {
-            try {
-                return "Free My TV " + c.getPackageManager().getPackageInfo(c.getPackageName(), 0).versionName;
-            } catch (android.content.pm.PackageManager.NameNotFoundException e) {
-                return "Free My TV";
-            }
-        }
+        // MARK: - Keys
 
         boolean onKey(KeyEvent e) {
             boolean down = e.getAction() == KeyEvent.ACTION_DOWN;
             switch (e.getKeyCode()) {
                 case KeyEvent.KEYCODE_DPAD_UP:
-                    if (down && focus > 0) focus--;
-                    else if (down && scrolling() && pickScroll > 0) pickScroll--;
-                    invalidate();
-                    spoken.focusMoved();
+                case KeyEvent.KEYCODE_DPAD_DOWN: {
+                    if (down) move(e.getKeyCode() == KeyEvent.KEYCODE_DPAD_DOWN ? 1 : -1);
                     return true;
-                case KeyEvent.KEYCODE_DPAD_DOWN:
-                    if (down && focus < rowCount() - 1) focus++;
-                    else if (down && scrolling() && pickScroll + rowCount() < listSize()) pickScroll++;
-                    invalidate();
-                    spoken.focusMoved();
-                    return true;
+                }
                 case KeyEvent.KEYCODE_DPAD_LEFT:
                 case KeyEvent.KEYCODE_DPAD_RIGHT:
-                    if (down && screen == SHELF_EDIT) {
-                        moveShelfApp(e.getKeyCode() == KeyEvent.KEYCODE_DPAD_RIGHT ? 1 : -1);
-                        invalidate();
-                    } else if (down && screen == HOME_SETTINGS) {
-                        adjust(e.getKeyCode() == KeyEvent.KEYCODE_DPAD_RIGHT ? 1 : -1);
-                        invalidate();
-                    }
+                    if (down) step(e.getKeyCode() == KeyEvent.KEYCODE_DPAD_RIGHT ? 1 : -1);
                     return true;
                 case KeyEvent.KEYCODE_DPAD_CENTER:
                 case KeyEvent.KEYCODE_ENTER:
@@ -588,79 +758,49 @@ public class SettingsActivity extends Activity {
                     if (down) {
                         if (e.getRepeatCount() == 0) backDown = true;
                     } else {
-                        if (backDown && !e.isCanceled()) {
-                            if (screen == PICKER) {
-                                focus = pickFor - 1;
-                                screen = REMOTE_KEYS;
-                            } else {
-                                focus = screen == HOME_SETTINGS ? 2 : screen == SHELF_EDIT ? 3 : screen == REMOTE_KEYS ? 4 : 0;
-                                screen = MAIN;
-                            }
-                        }
+                        if (backDown && !e.isCanceled()) goBack();
                         backDown = false;
                     }
-                    invalidate();
-                    spoken.focusMoved();
                     return true;
                 default:
                     return false;
             }
         }
 
-        // MARK: - Home Settings and Remote Buttons
-
-        private static final String[] LANGUAGES = {"auto", "pt", "en", "es"}, UNITS = {"auto", "C", "F"}, THEMES = {"auto", "light", "dark"};
-        /** Home Settings: language, temperature, theme, weather, quotes, then one row per coin. */
-        private static final int COIN_ROWS = 5;
-
-        private boolean dollar() {
-            return "BRL".equalsIgnoreCase(Config.CURRENCY.trim());
+        private void goBack() {
+            String back = screen == PICKER ? "key" + (pickFor - 1) : screen == SHELF_EDIT ? "shelf" : "remote";
+            screen = screen == PICKER ? REMOTE_KEYS : MAIN;
+            focus = -1;
+            dirty = true;
+            build();
+            for (int i = 0; i < rows.size(); i++) if (back.equals(rows.get(i).key)) { focus = i; break; }
+            if (focus < 0) focus = firstFocusable();
+            scrollToFocus();
+            invalidate();
+            spoken.focusMoved();
         }
 
-        private String[] settingLabels() {
-            List<String> l = new ArrayList<>();
-            l.add(Ui.tr("Idioma", "Language"));
-            l.add(Ui.tr("Temperatura", "Temperature"));
-            l.add(Ui.tr("Tema", "Theme"));
-            l.add(Ui.tr("Widget do clima", "Weather widget"));
-            l.add(Ui.tr("Widget de cotações", "Quotes widget"));
-            l.add("Bitcoin");
-            l.add("Ethereum");
-            l.add("Solana");
-            if (dollar()) l.add(Ui.tr("Dólar", "Dollar"));
-            return l.toArray(new String[0]);
+        private void move(int dir) {
+            int i = focus + dir;
+            while (i >= 0 && i < rows.size() && !rows.get(i).focusable()) i += dir;
+            if (i < 0 || i >= rows.size()) return;
+            focus = i;
+            scrollToFocus();
+            invalidate();
+            spoken.focusMoved();
         }
 
-        private String[] settingValues() {
-            String[] labels = settingLabels();
-            String[] v = new String[labels.length];
-            String lang = Prefs.language();
-            v[0] = lang.equals("pt") ? "Português" : lang.equals("en") ? "English" : lang.equals("es") ? "Español" : Ui.tr("Automático", "Automatic");
-            String unit = Prefs.temperature();
-            v[1] = unit.equals("C") ? "°C" : unit.equals("F") ? "°F" : Ui.tr("Automática", "Automatic");
-            String theme = Prefs.theme();
-            v[2] = theme.equals("light") ? Ui.tr("Claro", "Light") : theme.equals("dark") ? Ui.tr("Escuro", "Dark") : Ui.tr("Automático", "Automatic");
-            v[3] = onOff(Prefs.weather());
-            v[4] = onOff(Prefs.quotes());
-            // No quotes widget, nowhere to show prices: the coins read as off (and stay locked) until it is back on.
-            for (int i = COIN_ROWS; i < v.length; i++) v[i] = onOff(Prefs.quotes() && Prefs.coin(i - COIN_ROWS));
-            return v;
-        }
-
-        private static String onOff(boolean on) {
-            return on ? Ui.tr("Ligado", "On") : Ui.tr("Desligado", "Off");
-        }
+        // MARK: - Actions
 
         private String[] keyLabels() {
-            return new String[] {Ui.tr("Botão Netflix", "Netflix button"), Ui.tr("Botão YouTube", "YouTube button"),
-                    Ui.tr("Botão Prime Video", "Prime Video button"), Ui.tr("Botão TCL Channel", "TCL Channel button")};
+            return new String[] {"ปุ่ม Netflix", "ปุ่ม YouTube", "ปุ่ม Prime Video", "ปุ่ม TCL Channel"};
         }
 
         private String[] keyValues() {
             String[] v = new String[Prefs.KEYS.length];
             for (int i = 0; i < v.length; i++) {
                 int at = appPkgs.indexOf(Prefs.keyApp(Prefs.KEYS[i]));
-                v[i] = at >= 0 ? appLabels.get(at) : Ui.tr("Não instalado", "Not installed");
+                v[i] = at >= 0 ? appLabels.get(at) : "ไม่ได้ติดตั้ง";
             }
             return v;
         }
@@ -680,131 +820,39 @@ public class SettingsActivity extends Activity {
             appPkgs.clear();
             appLabels.clear();
             appPkgs.add("");
-            appLabels.add(Ui.tr("Nada", "Nothing"));
+            appLabels.add("ไม่ทำอะไร");
             for (String[] f : found) {
                 appPkgs.add(f[0]);
                 appLabels.add(f[1]);
             }
         }
 
-        /** Changes the focused row's value one step (OK and → go forward, ← goes back). */
-        private void adjust(int dir) {
-            if (screen == REMOTE_KEYS) {
-                int n = appPkgs.size();
-                int at = appPkgs.indexOf(Prefs.keyApp(Prefs.KEYS[focus]));
-                int next = at < 0 ? (dir > 0 ? 0 : n - 1) : (at + dir + n) % n;
-                Prefs.setKeyApp(Prefs.KEYS[focus], appPkgs.get(next));
-                return;
-            }
-            switch (focus) {
-                case 0: {
-                    int at = java.util.Arrays.asList(LANGUAGES).indexOf(Prefs.language());
-                    Prefs.setLanguage(LANGUAGES[(at + dir + LANGUAGES.length) % LANGUAGES.length]);
-                    break;
-                }
-                case 1: {
-                    int at = java.util.Arrays.asList(UNITS).indexOf(Prefs.temperature());
-                    Prefs.setTemperature(UNITS[(at + dir + UNITS.length) % UNITS.length]);
-                    break;
-                }
-                case 2: {
-                    int at = java.util.Arrays.asList(THEMES).indexOf(Prefs.theme());
-                    Prefs.setTheme(THEMES[(at + dir + THEMES.length) % THEMES.length]);
-                    break;
-                }
-                case 3: Prefs.setWeather(!Prefs.weather()); break;
-                case 4: Prefs.setQuotes(!Prefs.quotes()); break;
-                default:
-                    if (!Prefs.quotes()) return;
-                    Prefs.setCoin(focus - COIN_ROWS, !Prefs.coin(focus - COIN_ROWS));
-                    break;
-            }
-            HomeData.get(getContext()).settingsChanged();
-        }
-
-        private boolean scrolling() {
-            return screen == PICKER || screen == SHELF_EDIT;
-        }
-
-        private int listSize() {
-            return screen == SHELF_EDIT ? shelfRows.size() : pickLabels.size();
-        }
-
-        // MARK: - Shelf editor
-
         private void openShelfEditor() {
             shelfOrder.clear();
             shelfOrder.addAll(HomeApps.shelfPackages(getContext()));
-            rebuildShelfRows(HomeApps.shelfCandidates(getContext()));
-            pickScroll = 0;
-            focus = 0;
-            screen = SHELF_EDIT;
-        }
-
-        /** Selected apps first, in shelf order, then the rest in the order they came. */
-        private void rebuildShelfRows(List<String[]> candidates) {
+            List<String[]> candidates = HomeApps.shelfCandidates(getContext());
             shelfRows.clear();
-            for (String pkg : shelfOrder) {
-                for (String[] cand : candidates) if (cand[0].equals(pkg)) { shelfRows.add(cand); break; }
-            }
+            for (String pkg : shelfOrder) for (String[] cand : candidates) if (cand[0].equals(pkg)) { shelfRows.add(cand); break; }
             for (String[] cand : candidates) if (!shelfOrder.contains(cand[0])) shelfRows.add(cand);
+            screen = SHELF_EDIT;
+            focus = -1;
+            dirty = true;
+            build();
+            focus = firstFocusable();
+            scrollTarget = 0;
         }
 
-        /** Same rows after a change: keeps the focus on the app that was focused. */
-        private void refreshShelfRows(String focusedPkg) {
+        /** After a shelf change: selected apps first (in order), the focus follows the app. */
+        private void refreshShelf(String pkg) {
             List<String[]> all = new ArrayList<>(shelfRows);
-            rebuildShelfRows(all);
-            for (int i = 0; i < shelfRows.size(); i++) {
-                if (!shelfRows.get(i)[0].equals(focusedPkg)) continue;
-                int visible = rowCount();
-                if (i < pickScroll) pickScroll = i;
-                else if (i >= pickScroll + visible) pickScroll = i - visible + 1;
-                focus = i - pickScroll;
-                break;
-            }
+            shelfRows.clear();
+            for (String p : shelfOrder) for (String[] cand : all) if (cand[0].equals(p)) { shelfRows.add(cand); break; }
+            for (String[] cand : all) if (!shelfOrder.contains(cand[0])) shelfRows.add(cand);
             Prefs.setShelf(shelfOrder);
-        }
-
-        /** OK: puts the app on the shelf (at the end) or takes it off. */
-        private void toggleShelfApp() {
-            String pkg = shelfRows.get(pickScroll + focus)[0];
-            if (shelfOrder.contains(pkg)) shelfOrder.remove(pkg);
-            else if (shelfOrder.size() < HomeApps.MAX_SHELF) shelfOrder.add(pkg);
-            else return;
-            refreshShelfRows(pkg);
-        }
-
-        /** ← → : moves a shelf app one place earlier or later. */
-        private void moveShelfApp(int dir) {
-            String pkg = shelfRows.get(pickScroll + focus)[0];
-            int at = shelfOrder.indexOf(pkg), to = at + dir;
-            if (at < 0 || to < 0 || to >= shelfOrder.size()) return;
-            shelfOrder.remove(at);
-            shelfOrder.add(to, pkg);
-            refreshShelfRows(pkg);
-        }
-
-        private void drawShelfEditor(Canvas c) {
-            Paint heading = Ui.text(Ui.displaySemibold, 34 * k, 0xFFFFFFFF);
-            c.drawText(Ui.tr("Prateleira", "Shelf"), LIST_X * k + 30 * k, (LIST_TOP - 24) * k, heading);
-            int rows = rowCount();
-            for (int i = 0; i < rows; i++) {
-                String[] app = shelfRows.get(pickScroll + i);
-                int place = shelfOrder.indexOf(app[0]);
-                float y = (LIST_TOP + 20 + i * (LIST_ROW_H + LIST_ROW_GAP)) * k;
-                rowRect.set(LIST_X * k, y, LIST_R * k, y + LIST_ROW_H * k);
-                float f = drawRowBackground(c, i);
-                rowLabel.setColor(blend(place >= 0 ? 0xF2FFFFFF : 0x80FFFFFF, place >= 0 ? INK : 0x801C1C1E, f));
-                rowValue.setColor(blend(0xB3FFFFFF, 0xB31C1C1E, f));
-                float base = rowRect.centerY() + Ui.halfCap(rowLabel);
-                c.drawText(TextUtils.ellipsize(app[1], new TextPaint(rowLabel), 520 * k, TextUtils.TruncateAt.END).toString(), rowRect.left + 30 * k, base, rowLabel);
-                c.drawText(place >= 0 ? "#" + (place + 1) : Ui.tr("Fora", "Off"), rowRect.right - 30 * k, base, rowValue);
-            }
-            Paint hint = Ui.text(Ui.regular, 23 * k, 0x8CFFFFFF);
-            float hy = (LIST_TOP + 20 + rows * (LIST_ROW_H + LIST_ROW_GAP) + 36) * k;
-            c.drawText(Ui.tr("OK põe ou tira da prateleira (até " + HomeApps.MAX_SHELF + "). ← → mudam a ordem.",
-                    "OK adds or removes (up to " + HomeApps.MAX_SHELF + "). ← → change the order.",
-                    "OK pone o quita del estante (hasta " + HomeApps.MAX_SHELF + "). ← → cambian el orden."), LIST_X * k + 30 * k, hy, hint);
+            dirty = true;
+            build();
+            for (int i = 0; i < rows.size(); i++) if (pkg.equals(rows.get(i).key)) { focus = i; break; }
+            scrollToFocus();
         }
 
         private void openPicker(int which) {
@@ -812,115 +860,129 @@ public class SettingsActivity extends Activity {
             pickLabels.clear();
             pickLabels.addAll(appLabels);
             pickCurrent = appPkgs.indexOf(Prefs.keyApp(Prefs.KEYS[which - 1]));
-            int visible = Math.min(PICK_VISIBLE, pickLabels.size());
-            int at = Math.max(0, pickCurrent);
-            pickScroll = Math.max(0, Math.min(at - 3, pickLabels.size() - visible));
-            focus = at - pickScroll;
             screen = PICKER;
+            focus = -1;
+            dirty = true;
+            build();
+            focus = Math.max(firstFocusable(), pickCurrent >= 0 ? 1 + pickCurrent : firstFocusable());
+            scrollToFocus();
         }
 
-        /** A long list (the apps): nine rows at a time, the one in use checked. */
-        private void drawPicker(Canvas c) {
-            Paint heading = Ui.text(Ui.displaySemibold, 34 * k, 0xFFFFFFFF);
-            String title = keyLabels()[pickFor - 1];
-            c.drawText(title, LIST_X * k + 30 * k, (LIST_TOP - 24) * k, heading);
-            int rows = rowCount();
-            for (int i = 0; i < rows; i++) {
-                int at = pickScroll + i;
-                float y = (LIST_TOP + 20 + i * (LIST_ROW_H + LIST_ROW_GAP)) * k;
-                rowRect.set(LIST_X * k, y, LIST_R * k, y + LIST_ROW_H * k);
-                float f = drawRowBackground(c, i);
-                rowLabel.setColor(blend(0xF2FFFFFF, INK, f));
-                c.drawText(pickLabels.get(at), rowRect.left + 30 * k, rowRect.centerY() + Ui.halfCap(rowLabel), rowLabel);
-                if (at == pickCurrent) {
-                    float cw = Symbols.width(getContext(), "check", 26 * k);
-                    Symbols.draw(getContext(), c, "check", rowRect.right - 30 * k - cw / 2, rowRect.centerY(), 26 * k, blend(0xFFFFFFFF, INK, f));
+        /** ← → : seg, switch and the shelf's order. */
+        private void step(int dir) {
+            if (focus < 0 || focus >= rows.size()) return;
+            Row r = rows.get(focus);
+            if (screen == SHELF_EDIT && r.type == SHELF) {
+                int at = shelfOrder.indexOf(r.key), to = at + dir;
+                if (at < 0 || to < 0 || to >= shelfOrder.size()) return;
+                shelfOrder.remove(at);
+                shelfOrder.add(to, r.key);
+                refreshShelf(r.key);
+                invalidate();
+            } else if (r.type == SEG) {
+                choose(r, (r.sel + dir + r.opts.length) % r.opts.length);
+            } else if (r.type == SW) {
+                toggle(r);
+            }
+        }
+
+        private void choose(Row r, int sel) {
+            Context c = getContext();
+            switch (r.key) {
+                case "greet": Prefs.setGreet(sel); toast("คำทักทาย: " + Thai.GREETINGS[sel]); break;
+                case "theme": Prefs.setTheme(THEMES[sel]); toast("ธีม: " + r.opts[sel]); break;
+                case "temp": Prefs.setTemperature(UNITS[sel]); HomeData.get(c).settingsChanged(); toast("หน่วยอุณหภูมิ: " + r.opts[sel]); break;
+                case "home": {
+                    boolean wantFree = sel == 0;
+                    if (busy()) { toast("กำลังสลับอยู่ รอสักครู่"); return; }
+                    if (wantFree == freeActive()) return;
+                    HomeMode.request(c, wantFree ? HomeMode.FREE : HomeMode.ORIGINAL);
+                    pendingAt = SystemClock.uptimeMillis();
+                    toast(wantFree ? "กำลังสลับไป Free My TV…" : "กำลังกลับสู่หน้าโฮมเดิม…");
+                    break;
                 }
+                default: return;
             }
-            Paint hint = Ui.text(Ui.regular, 23 * k, 0x8CFFFFFF);
-            float hy = (LIST_TOP + 20 + rows * (LIST_ROW_H + LIST_ROW_GAP) + 36) * k;
-            c.drawText((pickScroll + focus + 1) + " / " + pickLabels.size() + "  ·  " + Ui.tr("OK escolhe, Voltar cancela.", "OK picks, Back cancels."),
-                    LIST_X * k + 30 * k, hy, hint);
+            dirty = true;
+            invalidate();
+            spoken.focusMoved();
         }
 
-        private void drawList(Canvas c) {
-            boolean keys = screen == REMOTE_KEYS;
-            String[] labels = keys ? keyLabels() : settingLabels();
-            String[] values = keys ? keyValues() : settingValues();
-            Paint heading = Ui.text(Ui.displaySemibold, 34 * k, 0xFFFFFFFF);
-            c.drawText(keys ? Ui.tr("Botões do Controle", "Remote Buttons") : Ui.tr("Ajustes do Início", "Home Settings"),
-                    LIST_X * k + 30 * k, (LIST_TOP - 24) * k, heading);
-            for (int i = 0; i < labels.length; i++) {
-                float y = (LIST_TOP + 20 + i * (LIST_ROW_H + LIST_ROW_GAP)) * k;
-                rowRect.set(LIST_X * k, y, LIST_R * k, y + LIST_ROW_H * k);
-                float f = drawRowBackground(c, i);
-                rowLabel.setColor(blend(0xF2FFFFFF, INK, f));
-                boolean locked = !keys && i >= COIN_ROWS && !Prefs.quotes();
-                rowValue.setColor(blend(locked ? 0x59FFFFFF : 0xB3FFFFFF, locked ? 0x591C1C1E : 0xB31C1C1E, f));
-                if (locked) rowLabel.setColor(blend(0x73FFFFFF, 0x731C1C1E, f));
-                float base = rowRect.centerY() + Ui.halfCap(rowLabel);
-                c.drawText(labels[i], rowRect.left + 30 * k, base, rowLabel);
-                c.drawText(values[i], rowRect.right - 30 * k, base, rowValue);
+        private void toggle(Row r) {
+            boolean on = !r.on;
+            switch (r.key) {
+                case "crypto": Prefs.setQuotes(on); HomeData.get(getContext()).settingsChanged(); break;
+                case "cweather": Prefs.setCardWeather(on); break;
+                case "ccal": Prefs.setCardCalendar(on); break;
+                case "csys": Prefs.setCardSystem(on); break;
+                default: return;
             }
-            Paint hint = Ui.text(Ui.regular, 23 * k, 0x8CFFFFFF);
-            float hy = (LIST_TOP + 20 + labels.length * (LIST_ROW_H + LIST_ROW_GAP) + 36) * k;
-            c.drawText(Ui.tr("OK ou as setas mudam o valor.", "OK or the arrows change the value."), LIST_X * k + 30 * k, hy, hint);
-            if (keys) {
-                c.drawText(RemoteKeys.supported() ? Ui.tr("Disney e Globoplay: a própria TV controla esses botões.",
-                        "Disney and Globoplay: the TV itself controls those buttons.")
-                        : Ui.tr("Esses são os botões do controle da TCL: nesta TV, os botões funcionam como sempre.",
-                        "These are the TCL remote's buttons: on this TV, the buttons work as they always did."), LIST_X * k + 30 * k, hy + 38 * k, hint);
-            }
+            toast(r.label + ": " + (on ? "เปิด" : "ปิด"));
+            dirty = true;
+            invalidate();
+            spoken.focusMoved();
         }
 
         private void activate() {
+            if (focus < 0 || focus >= rows.size()) return;
+            Row r = rows.get(focus);
             Context c = getContext();
-            if (screen == HOME_CHOICE) {
-                boolean wantFree = focus == 0;
-                if (wantFree != freeActive() && !busy()) {
-                    HomeMode.request(c, wantFree ? HomeMode.FREE : HomeMode.ORIGINAL);
-                    pendingAt = SystemClock.uptimeMillis();
-                }
-                screen = MAIN;
-                focus = 0;
-            } else if (screen == PICKER) {
-                int at = pickScroll + focus;
+            if (r.type == SEG) {
+                choose(r, (r.sel + 1) % r.opts.length);
+            } else if (r.type == SW) {
+                toggle(r);
+            } else if (r.type == INPUT) {
+                activity.askName();
+            } else if (r.type == CHECK) {
+                int at = Integer.parseInt(r.key.substring(4));
                 Prefs.setKeyApp(Prefs.KEYS[pickFor - 1], appPkgs.get(at));
-                focus = pickFor - 1;
-                screen = REMOTE_KEYS;
-            } else if (screen == SHELF_EDIT) {
-                toggleShelfApp();
+                goBack();
+            } else if (r.type == SHELF) {
+                boolean on = shelfOrder.contains(r.key);
+                if (on) shelfOrder.remove(r.key);
+                else if (shelfOrder.size() < HomeApps.MAX_SHELF) shelfOrder.add(r.key);
+                else { toast("ชั้นแอปเต็ม (สูงสุด " + HomeApps.MAX_SHELF + " แอป)"); return; }
+                refreshShelf(r.key);
                 invalidate();
-                return;
-            } else if (screen == REMOTE_KEYS) {
-                openPicker(focus + 1);
-            } else if (screen == HOME_SETTINGS) {
-                adjust(1);
-                invalidate();
-                return;
-            } else if (focus == 0) {
-                if (busy()) return;
-                screen = HOME_CHOICE;
-                focus = freeActive() ? 0 : 1;
-            } else if (focus == 1) {
-                pause();
-                activity.showPreview();
-            } else if (focus == 2) {
-                screen = HOME_SETTINGS;
-                focus = 0;
-            } else if (focus == 3) {
-                openShelfEditor();
-            } else if (focus == 4) {
-                HomeMode.ensureRemoteService(c, 0);   // the buttons work from inside other apps through this service
-                loadApps();
-                screen = REMOTE_KEYS;
-                focus = 0;
-            } else {
-                activity.startActivity(new Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            } else if (r.type == DANGER) {
+                if (busy()) { toast("กำลังสลับอยู่ รอสักครู่"); return; }
+                if (!freeActive()) { toast("ใช้หน้าโฮมเดิมอยู่แล้ว"); return; }
+                HomeMode.request(c, HomeMode.ORIGINAL);
+                pendingAt = SystemClock.uptimeMillis();
+                toast("กำลังกลับสู่หน้าโฮมเดิม (Original)…");
+            } else if (r.type == VAL) {
+                switch (r.key) {
+                    case "shelf": openShelfEditor(); break;
+                    case "remote":
+                        HomeMode.ensureRemoteService(c, 0);   // the buttons work from inside other apps through this service
+                        loadApps();
+                        screen = REMOTE_KEYS;
+                        focus = -1;
+                        dirty = true;
+                        build();
+                        focus = firstFocusable();
+                        scrollTarget = 0;
+                        break;
+                    case "saver": pause(); activity.showPreview(); return;
+                    case "tv": activity.startActivity(new Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); return;
+                    default:
+                        if (r.key != null && r.key.startsWith("key")) {
+                            openPicker(Integer.parseInt(r.key.substring(3)) + 1);
+                            break;
+                        }
+                        return;
+                }
             }
-            for (Spring s : pop) s.snap(0);
             invalidate();
             spoken.focusMoved();
+        }
+
+        private static String versionName(Context c) {
+            try {
+                return "Free My TV " + c.getPackageManager().getPackageInfo(c.getPackageName(), 0).versionName;
+            } catch (PackageManager.NameNotFoundException e) {
+                return "Free My TV";
+            }
         }
     }
 }

@@ -9,3 +9,6 @@ out/
 
 # macOS
 .DS_Store
+
+# Weather sky photos: provenance unknown, kept out of the repo (see TCL-THAI-HOME.md)
+app/assets/weather/

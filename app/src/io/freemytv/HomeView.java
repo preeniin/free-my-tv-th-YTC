@@ -14,7 +14,6 @@ import android.graphics.Path;
 import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
-import android.graphics.drawable.Drawable;
 import android.media.tv.TvInputManager;
 import android.os.Handler;
 import android.os.Looper;
@@ -145,8 +144,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final FeedCard[] feedCards = new FeedCard[3];
     private String feedSig = "";
     private TextPaint fLabelIndigo, fLabelEmber, fLabelMuted, fDate, fTime, fTimePast, fTitle, fTitlePast, fMeta, fMetaPast,
-            fChip, fTemp, fCond, fRange, fAir, fHour, fHourTemp, fRain, fRainStrong, fHeadline, fSource, fAppName, fHint;
-    private final Path feedClip = new Path();
+            fChip, fTemp, fCond, fRange, fAir, fHour, fHourTemp, fRain, fRainStrong, fHeadline, fSource, fHint, fNum, fBtn, fBtnOn;
+    private int cardSub;      // the Memory card: 0 Clear memory, 1 Close apps
     // The header: greeting, date and clock (made once a minute, not per frame).
     private Paint lDate, lClock;
     private String greeting = "", dateLine = "", clockLine = "";
@@ -2032,6 +2031,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             it = lightButtons.get(topIndex - 3);
             r = topRects[topIndex];
         } else if (zone == Z_CARDS) {
+            if (Feed.active() && cardIndex == 2) {
+                click.open();
+                memoryAction(cardSub);
+                return;
+            }
             Recs.Pick p = cardIndex < cards.size() ? cards.get(cardIndex) : null;
             if (p == null || p.pkg == null) return;
             it = HomeApps.app(p.pkg, Recs.serviceName(p));
@@ -2243,7 +2247,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (Feed.active()) updateFeedCards();
     }
 
-    //     // MARK: - Feed cards: agenda with weather, news and an app shortcut
+    // MARK: - Feed cards: agenda with weather, news and memory
     //
     // Sizes and colors are the redesign's (1920 × 1080 grid, multiplied by k). Each card is laid out once per change
     // (content, tab, size, minute) into boxes, icons and text layouts, in the card's own coordinates; drawing only
@@ -2300,7 +2304,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         fRainStrong.setColor(tone(F_RAIN, F_RAIN_N));
         fHeadline.setColor(ink);
         fSource.setColor(muted);
-        fAppName.setColor(ink);
+        fNum.setColor(ink);
+        fBtn.setColor(ink);
+        fBtnOn.setColor(tone(F_CARD, 0xFF0D1015));
         fHint.setColor(muted);
     }
 
@@ -2327,7 +2333,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         fRainStrong = feedNumbers(Ui.semibold, 22);
         fHeadline = feedPaint(Ui.medium, 26, 0);
         fSource = feedPaint(Ui.regular, 22, 0);
-        fAppName = feedPaint(Ui.semibold, 32, 0);
+        fNum = feedNumbers(Ui.light, 56);
+        fNum.setLetterSpacing(-0.02f);
+        fBtn = feedPaint(Ui.semibold, 26, 0);
+        fBtnOn = feedPaint(Ui.semibold, 26, 0);
         fHint = feedPaint(Ui.medium, 26, 0);
         feedTone();
     }
@@ -2348,12 +2357,15 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private static final class FeedText {
         StaticLayout layout;
         float x, y;
+        int sub = -1;       // >= 0: a button label (drawn only for the focus state in `on`)
+        boolean on;
     }
 
     private static final class FeedBox {
         final RectF r = new RectF();
         float radius;
         int role, color;
+        int sub = -1;       // >= 0: a button (indigo when it has the focus)
     }
 
     private static final class FeedIcon {
@@ -2366,9 +2378,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         final List<FeedBox> boxes = new ArrayList<>();
         final List<FeedIcon> icons = new ArrayList<>();
         final List<FeedText> texts = new ArrayList<>();
-        Drawable banner;
-        final RectF bannerRect = new RectF();
-        boolean youtube;    // the banner is YouTube's red mark, drawn
 
         FeedBox box(float x, float y, float w, float h, float radius, int role, int color) {
             FeedBox b = new FeedBox();
@@ -2436,7 +2445,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (fLabelIndigo == null || cardRects[0].width() < 1) return;
         long now = System.currentTimeMillis();
         String sig = tab + "|" + now / 60_000 + "|" + data.weatherAt + "|" + Double.doubleToLongBits(data.pm25) + "|"
-                + (int) cardRects[0].width() + "|" + (int) cardRects[1].width();
+                + (int) cardRects[0].width() + "|" + (int) cardRects[1].width() + "|" + Memory.snapshot(getContext())[0] / (24L << 20)
+                + "|" + cardSub + "|" + Memory.busy() + "|" + memNote.hashCode();
         if (sig.equals(feedSig) && cards.size() == 3) return;
         feedSig = sig;
         List<Recs.Pick> list = new ArrayList<>();
@@ -2446,10 +2456,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         say.setLength(0);
         feedCards[1] = newsCard(now, say);
         list.add(feedPick(1, say.toString(), null));
-        String[] pkg = new String[1];
         say.setLength(0);
-        feedCards[2] = openCard(say, pkg);
-        list.add(feedPick(2, say.toString(), pkg[0]));
+        feedCards[2] = memoryCard(say);
+        list.add(feedPick(2, say.toString(), null));
         cards = list;
         cardIndex = Math.min(cardIndex, 2);
         showBackdrop(null);
@@ -2669,46 +2678,65 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         return hours < 24 ? hours + " h ago" : "";
     }
 
-    // MARK: Open (one app)
+    // MARK: Memory (free RAM, Clear memory, Close apps)
 
-    private FeedCard openCard(StringBuilder say, String[] pkgOut) {
+    private static final String[] MEMORY_ACTIONS = {"Clear memory", "Close apps"};
+    private String memNote = "";
+    private long memNoteAt;
+
+    private FeedCard memoryCard(StringBuilder say) {
         FeedCard fc = new FeedCard();
         float px = 32 * k, py = 36 * k, w = cardRects[2].width() - 2 * px;
-        feedHeader(fc, px, py, w, "play_circle", R_INDIGO, fLabelIndigo, "OPEN", null);
-        float y = py + 56 * k;
-        String pkg = Config.CARD3_APP;
-        android.content.pm.PackageManager pm = getContext().getPackageManager();
-        android.content.Intent launch = pkg.isEmpty() ? null : HomeApps.launchIntent(pm, pkg);
-        String label = "";
-        if (launch != null) {
-            try {
-                label = String.valueOf(pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)));
-                fc.bannerRect.set(px, y, px + w, y + 151 * k);
-                if (pkg.equals("com.google.android.youtube.tv")) {
-                    fc.youtube = true;
-                } else {
-                    Drawable d = pm.getApplicationBanner(pkg);
-                    if (d == null) d = pm.getApplicationIcon(pkg);
-                    d.setBounds(Math.round(px), Math.round(y), Math.round(px + w), Math.round(y + 151 * k));
-                    fc.banner = d;
-                }
-                y += 151 * k + 24 * k;
-            } catch (android.content.pm.PackageManager.NameNotFoundException e) {
-                launch = null;
+        feedHeader(fc, px, py, w, "memory", R_INDIGO, fLabelIndigo, "MEMORY", null);
+        long[] mem = Memory.snapshot(getContext());
+        long free = mem[0], total = Math.max(1, mem[1]);
+        float y = py + 44 * k;
+        StaticLayout num = feedText(Memory.size(free), fNum, w, 1, 64 * k);
+        fc.text(num, px, y);
+        y += num.getHeight();
+        StaticLayout sub = feedText("free of " + Memory.size(total), fSource, w, 1, 28 * k);
+        fc.text(sub, px, y);
+        y += sub.getHeight() + 16 * k;
+        // The bar: how much is in use (turns ember when it is tight).
+        float used = Math.max(0, Math.min(1, 1 - free / (float) total));
+        fc.box(px, y, w, 10 * k, 5 * k, R_PANEL, 0);
+        fc.box(px, y, Math.max(10 * k, w * used), 10 * k, 5 * k, used > 0.85f ? R_EMBER : R_INDIGO, 0);
+        y += 10 * k + 22 * k;
+        for (int i = 0; i < MEMORY_ACTIONS.length; i++) {
+            float bh = 64 * k;
+            FeedBox b = fc.box(px, y, w, bh, 18 * k, R_ROW, 0);
+            b.sub = i;
+            for (int on = 0; on < 2; on++) {
+                StaticLayout l = feedCentered(MEMORY_ACTIONS[i], on == 1 ? fBtnOn : fBtn, w);
+                FeedText t = fc.text(l, px, y + (bh - l.getHeight()) / 2);
+                t.sub = i;
+                t.on = on == 1;
             }
+            y += bh + 12 * k;
         }
-        if (launch == null) {
-            fc.text(feedText("Set card3_app (an app's package name) in config.properties.", fHint, w, 5, 36 * k), px, y);
-            say.append("No app set");
-            return fc;
-        }
-        StaticLayout name = feedText(label, fAppName, w, 1, 40 * k);
-        fc.text(name, px, y);
-        y += name.getHeight() + 4 * k;
-        fc.text(feedText("Press OK to open", fSource, w, 1, 28 * k), px, y);
-        say.append("Open ").append(label);
-        pkgOut[0] = pkg;
+        String note = Memory.busy() ? "Working…" : System.currentTimeMillis() - memNoteAt < 20_000 ? memNote : "";
+        if (!note.isEmpty()) fc.text(feedText(note, fSource, w, 3, 30 * k), px, y + 6 * k);
+        say.append("Memory, ").append(Memory.size(free)).append(" free. Clear memory. Close apps.");
         return fc;
+    }
+
+    /** OK on the Memory card's focused button. */
+    private void memoryAction(int which) {
+        Memory.Result done = new Memory.Result() {
+            @Override public void done(String text) {
+                memNote = text;
+                memNoteAt = System.currentTimeMillis();
+                feedSig = "";
+                updateFeedCards();
+                heroLayer.invalidate();
+            }
+        };
+        memNote = "";
+        if (which == 0) Memory.clear(getContext().getApplicationContext(), done);
+        else Memory.closeApps(getContext().getApplicationContext(), done);
+        feedSig = "";
+        updateFeedCards();
+        heroLayer.invalidate();
     }
 
     private static Recs.Pick feedPick(int id, String title, String pkg) {
@@ -2729,30 +2757,16 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         c.translate(cell.left, cell.top);
         c.scale(s, s);
         fill.setShader(null);
+        int focusedSub = i == 2 && zone == Z_CARDS && cardIndex == 2 && cardFocus[2].value > 0.5f ? cardSub : -1;
         for (FeedBox b : fc.boxes) {
-            fill.setColor(feedColor(b.role, b.color));
+            fill.setColor(b.sub >= 0 && b.sub == focusedSub ? feedColor(R_INDIGO, 0) : feedColor(b.role, b.color));
             c.drawRoundRect(b.r, b.radius, b.radius, fill);
-        }
-        if (fc.youtube) {
-            RectF r = fc.bannerRect;
-            fill.setColor(0xFFFF0000);
-            c.drawRoundRect(r, 20 * k, 20 * k, fill);
-            drawPlayMark(c, r.centerX(), r.centerY(), r.height() * 0.38f);
-        } else if (fc.banner != null) {
-            RectF r = fc.bannerRect;
-            fill.setColor(feedColor(R_PANEL, 0));
-            c.drawRoundRect(r, 20 * k, 20 * k, fill);
-            feedClip.rewind();
-            feedClip.addRoundRect(r, 20 * k, 20 * k, Path.Direction.CW);
-            c.save();
-            c.clipPath(feedClip);
-            fc.banner.draw(c);
-            c.restore();
         }
         for (FeedIcon ic : fc.icons) {
             Icons.draw(c, ic.name, ic.x, ic.y, ic.size, feedColor(ic.role, 0), night);
         }
         for (FeedText t : fc.texts) {
+            if (t.sub >= 0 && t.on != (t.sub == focusedSub)) continue;
             c.save();
             c.translate(Math.round(t.x), Math.round(t.y));
             t.layout.draw(c);
@@ -3008,10 +3022,27 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                     int next = Math.max(0, Math.min(cards.size() - 1, cardIndex + dx));
                     if (next == cardIndex) return true;
                     cardIndex = next;
+                    cardSub = 0;
                 } else if (dy < 0) {
+                    if (Feed.active() && cardIndex == 2 && cardSub == 1) {
+                        cardSub = 0;    // inside the Memory card: from Close apps back up to Clear memory
+                        feedSig = "";
+                        updateFeedCards();
+                        click.move();
+                        return true;
+                    }
+                    cardSub = 0;
                     zone = Z_TOP;
                     topIndex = tab;     // as on Apple TV: moving up to the tabs focuses the selected tab
                 } else {
+                    if (Feed.active() && cardIndex == 2 && cardSub == 0) {
+                        cardSub = 1;    // inside the Memory card: down to Close apps
+                        feedSig = "";
+                        updateFeedCards();
+                        click.move();
+                        return true;
+                    }
+                    cardSub = 0;
                     zone = Z_SHELF;
                     if (!shelf.isEmpty()) shelfIndex = nearest(tileRects, tileRects.length, cardRects[cardIndex].centerX());
                 }

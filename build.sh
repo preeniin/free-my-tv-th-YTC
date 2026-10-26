@@ -56,7 +56,7 @@ final class Config {
     static final String CITY = "$(prop city '')";
     static final String ICAL_URL = "$(prop ical_url '')";
     static final String NEWS_URL = "$(prop news_url '')";
-    static final String CARD3_APP = "$(prop card3_app '')";
+    static final String STORY_APP = "$(prop story_app com.google.android.youtube.tv)";
     static final String LANGUAGE = "$(prop language auto)";
     static final String CURRENCY = "$(prop currency USD)";
     static final String TEMPERATURE = "$(prop temperature auto)";

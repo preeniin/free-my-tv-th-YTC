@@ -98,6 +98,26 @@ final class Icons {
         ICONS.put("play_circle", new Icon(24, 2,
                 new Layer("M21 12a9 9 0 1 1-18 0a9 9 0 1 1 18 0z", INK, 0, INK, 0),
                 new Layer("M10 8.5v7l5.5-3.5z", INK, INK, INK, INK)));
+        ICONS.put("apps", new Icon(24, 2, new Layer("M5.5 4h3A1.5 1.5 0 0 1 10 5.5v3A1.5 1.5 0 0 1 8.5 10h-3A1.5 1.5 0 0 1 4 8.5v-3A1.5 1.5 0 0 1 5.5 4zM15.5 4h3A1.5 1.5 0 0 1 20 5.5v3a1.5 1.5 0 0 1-1.5 1.5h-3A1.5 1.5 0 0 1 14 8.5v-3A1.5 1.5 0 0 1 15.5 4zM5.5 14h3A1.5 1.5 0 0 1 10 15.5v3A1.5 1.5 0 0 1 8.5 20h-3A1.5 1.5 0 0 1 4 18.5v-3A1.5 1.5 0 0 1 5.5 14zM15.5 14h3a1.5 1.5 0 0 1 1.5 1.5v3a1.5 1.5 0 0 1-1.5 1.5h-3a1.5 1.5 0 0 1-1.5-1.5v-3a1.5 1.5 0 0 1 1.5-1.5z", INK, 0, INK, 0)));
+        ICONS.put("home", new Icon(24, 2, new Layer("M3 11l9-8 9 8M5 10v10h14V10", INK, 0, INK, 0)));
+        ICONS.put("cloud", new Icon(24, 2, new Layer("M17 18a4 4 0 0 0 0-8 6 6 0 0 0-11.3-1.5A3.5 3.5 0 0 0 6 18z", INK, 0, INK, 0)));
+        ICONS.put("cards", new Icon(24, 2, new Layer("M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM3 9h18", INK, 0, INK, 0)));
+        ICONS.put("remote", new Icon(24, 2, new Layer("M5 6h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2zM7 10h.01M11 10h.01M15 10h.01M7 14h6", INK, 0, INK, 0)));
+        ICONS.put("gear", new Icon(24, 2, new Layer("M15 12a3 3 0 1 1-6 0a3 3 0 1 1 6 0zM12 2v3M12 19v3M2 12h3M19 12h3", INK, 0, INK, 0)));
+        ICONS.put("chevron", new Icon(24, 2.2f, new Layer("M9 6l6 6-6 6", INK, 0, INK, 0)));
+        ICONS.put("check", new Icon(24, 2.4f, new Layer("M4 12l5 5L20 6", INK, 0, INK, 0)));
+        ICONS.put("wifi", new Icon(24, 2,
+                new Layer("M2 8.5a15 15 0 0 1 20 0M5 12a10 10 0 0 1 14 0M8.5 15.5a5 5 0 0 1 7 0", INK, 0, INK, 0),
+                new Layer("M13 19a1 1 0 1 1-2 0a1 1 0 1 1 2 0z", INK, INK, INK, INK)));
+        ICONS.put("ethernet", new Icon(24, 2,
+                new Layer("M6 3h12v7h-2v3h-8v-3H6zM12 13v4M5 21h14M12 17v4", INK, 0, INK, 0)));
+        ICONS.put("bolt", new Icon(24, 2,
+                new Layer("M13 2L3 14h7l-1 8 10-12h-7l1-8z", INK, 0, INK, 0)));
+        ICONS.put("search", new Icon(24, 2,
+                new Layer("M18 11a7 7 0 1 1-14 0a7 7 0 1 1 14 0zM20 20l-4-4", INK, 0, INK, 0)));
+        ICONS.put("memory", new Icon(24, 2,
+                new Layer("M9 7h6a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2zM10 10h4v4h-4z"
+                        + "M9 3v2M12 3v2M15 3v2M9 19v2M12 19v2M15 19v2M3 9h2M3 12h2M3 15h2M19 9h2M19 12h2M19 15h2", INK, 0, INK, 0)));
         ICONS.put("drop", new Icon(16, 0,
                 new Layer("M7 1.5C5 4.6 2.5 7.4 2.5 10a4.5 4.5 0 0 0 9 0C11.5 7.4 9 4.6 7 1.5z", 0, INK, 0, INK)));
     }

@@ -340,6 +340,36 @@ final class HomeApps {
         return items;
     }
 
+    /** Every TV app (the ones on the shelf too), the shelf ones first in shelf order, then the rest by name; and our settings. */
+    static List<Item> everything(Context c) {
+        PackageManager pm = c.getPackageManager();
+        Set<String> skip = new HashSet<>();
+        skip.add(c.getPackageName());
+        skip.addAll(HIDDEN);
+        Intent query = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER);
+        List<Item> items = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (ResolveInfo ri : pm.queryIntentActivities(query, 0)) {
+            String pkg = ri.activityInfo.packageName;
+            if (skip.contains(pkg) || !seen.add(pkg)) continue;
+            Item it = new Item();
+            it.kind = APP;
+            it.pkg = pkg;
+            it.key = pkg;
+            it.label = String.valueOf(ri.loadLabel(pm));
+            it.tile = appTile(c, null, pkg, 0);
+            items.add(it);
+        }
+        final List<String> order = shelfPackages(c);
+        Collections.sort(items, (a, b) -> {
+            int ia = order.indexOf(a.pkg), ib = order.indexOf(b.pkg);
+            if (ia >= 0 || ib >= 0) return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
+            return a.label.toLowerCase(Locale.ROOT).compareTo(b.label.toLowerCase(Locale.ROOT));
+        });
+        items.add(special(c, SETTINGS, "freemytv-settings", "Free My TV", "sparkles"));
+        return items;
+    }
+
     private static Item special(Context c, int kind, String key, String label, String symbol) {
         Item it = shortcut(kind, key, label, symbol);
         it.tile = symbolTile(c, key, symbol);

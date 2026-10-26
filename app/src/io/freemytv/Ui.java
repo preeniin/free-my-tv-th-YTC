@@ -31,7 +31,7 @@ final class Ui {
     /** English, Portuguese or Spanish, from the settings or, with "auto", the TV's own language. */
     static volatile String language = language();
     static volatile boolean en = "en".equals(language), es = "es".equals(language);
-    static Typeface thin, light, displayMedium, displaySemibold, regular, medium, semibold;
+    static Typeface thin, light, displayMedium, displaySemibold, displayBold, regular, medium, semibold;
     private static boolean loaded;
     private static final Rect BOUNDS = new Rect();
     private static final RectF OVAL = new RectF();
@@ -44,6 +44,7 @@ final class Ui {
         light = font(a, 32, 300);
         displayMedium = font(a, 32, 500);
         displaySemibold = font(a, 32, 600);
+        displayBold = font(a, 32, 700);
         regular = font(a, 14, 400);
         medium = font(a, 14, 500);
         semibold = font(a, 14, 600);

@@ -84,6 +84,16 @@ final class HomeMode {
         "com.mediatek.wwtv.tvcenter", "com.mediatek.wwtv.setupwizard", "com.mediatek.tv.factory",
         "mediatek.factorymenu.ui", "com.tpv.xmic.ots.cms.client"));
 
+    /** Whether the TV already accepted this app's debugging key (so the status card can read the CPU without a prompt). */
+    static boolean adbAuthorized(Context c) {
+        return state(c).optBoolean("adbAuthorized");
+    }
+
+    /** Whether `pkg` is on the protected list (the home screen's Close apps never touches those). */
+    static boolean isProtected(String pkg) {
+        return PROTECTED.contains(pkg);
+    }
+
     /** One switch at a time (jobs can overlap: a boot check and a button press). */
     private static final Object RUN = new Object();
     private static final Object FILE_LOCK = new Object();

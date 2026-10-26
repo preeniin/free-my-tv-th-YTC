@@ -34,12 +34,12 @@ final class HomeData {
     private static final String CURRENCY = Config.CURRENCY.trim().toUpperCase(Locale.ROOT);
     /** Binance quotes dollars as USDT. */
     private static final String QUOTE = CURRENCY.equals("USD") ? "USDT" : CURRENCY;
-    private static final String WEATHER_QUERY = "&current=temperature_2m,weather_code,is_day&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset"
+    private static final String WEATHER_QUERY = "&current=temperature_2m,weather_code,is_day,relative_humidity_2m,apparent_temperature,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset"
             + "&hourly=temperature_2m,weather_code,is_day,precipitation_probability&timezone=auto&forecast_days=2";
 
     private static String airUrl() {
         return "https://air-quality-api.open-meteo.com/v1/air-quality?latitude=" + Prefs.latitude() + "&longitude=" + Prefs.longitude()
-                + "&current=pm2_5&timezone=auto";
+                + "&current=pm2_5,us_aqi&timezone=auto";
     }
 
     /** PM2.5 bands of Thailand's Pollution Control Department (µg/m³): the label and the dot color of each. */
@@ -64,8 +64,8 @@ final class HomeData {
         return "https://api.open-meteo.com/v1/forecast?latitude=" + Prefs.latitude() + "&longitude=" + Prefs.longitude() + WEATHER_QUERY;
     }
     private static final long PRICES_EVERY = 5 * 60_000L, WEATHER_EVERY = 30 * 60_000L;
-    /** Bump when the saved forecast gains fields (the saved one is discarded and fetched again). 2: chance of rain. */
-    private static final int WEATHER_V = 2;
+    /** Bump when the saved forecast gains fields (the saved one is discarded and fetched again). 4: humidity, feels-like and wind. */
+    private static final int WEATHER_V = 4;
     private long airTriedAt;
     interface Listener { void onData(); }
 
@@ -108,7 +108,8 @@ final class HomeData {
     }
 
     static final class Weather {
-        double temp = Double.NaN, max = Double.NaN, min = Double.NaN;
+        double temp = Double.NaN, max = Double.NaN, min = Double.NaN, feels = Double.NaN, wind = Double.NaN;
+        int humidity = -1;
         int code = -1;
         boolean isDay = true;
         long sunrise, sunset;   // today's, in epoch ms
@@ -120,8 +121,8 @@ final class HomeData {
         final List<Integer> hourRain = new ArrayList<>();   // chance of rain, %; -1 = unknown
     }
 
-    /** PM2.5 now, µg/m³ (NaN until fetched). */
-    volatile double pm25 = Double.NaN;
+    /** PM2.5 now, µg/m³, and the US AQI (NaN until fetched). */
+    volatile double pm25 = Double.NaN, aqi = Double.NaN;
 
     private static HomeData instance;
 
@@ -156,6 +157,7 @@ final class HomeData {
                 weather = parseWeather(w);
                 weatherAt = cache.getLong("weatherAt", 0);
                 if (cache.contains("pm25")) pm25 = cache.getFloat("pm25", Float.NaN);
+                if (cache.contains("aqi")) aqi = cache.getFloat("aqi", Float.NaN);
             }
         } catch (Exception ignored) {}
     }
@@ -199,8 +201,10 @@ final class HomeData {
                     AppLog.w("weather: " + e.getMessage());
                 }
                 try {
-                    pm25 = new JSONObject(get(airUrl())).getJSONObject("current").getDouble("pm2_5");
-                    cache.edit().putFloat("pm25", (float) pm25).apply();
+                    JSONObject air = new JSONObject(get(airUrl())).getJSONObject("current");
+                    pm25 = air.getDouble("pm2_5");
+                    aqi = air.optDouble("us_aqi", Double.NaN);
+                    cache.edit().putFloat("pm25", (float) pm25).putFloat("aqi", (float) aqi).apply();
                     notifyListeners();
                 } catch (Exception e) {
                     AppLog.w("air: " + e.getMessage());
@@ -242,6 +246,9 @@ final class HomeData {
         w.temp = current.getDouble("temperature_2m");
         w.code = current.getInt("weather_code");
         w.isDay = current.optInt("is_day", 1) == 1;
+        w.feels = current.optDouble("apparent_temperature", Double.NaN);
+        w.humidity = current.optInt("relative_humidity_2m", -1);
+        w.wind = current.optDouble("wind_speed_10m", Double.NaN);
         JSONObject daily = o.getJSONObject("daily");
         w.max = daily.getJSONArray("temperature_2m_max").getDouble(0);
         w.min = daily.getJSONArray("temperature_2m_min").getDouble(0);

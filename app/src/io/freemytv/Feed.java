@@ -65,6 +65,22 @@ final class Feed {
     void addListener(Listener l) { if (!listeners.contains(l)) listeners.add(l); }
     void removeListener(Listener l) { listeners.remove(l); }
 
+    /** Fetch again now (the calendar card asks for it with OK). */
+    void refreshNow() {
+        fetchedAt = -EVERY_MS;
+        refreshIfStale();
+    }
+
+    /** "5 min ago" / "2 h ago" for a feed item. */
+    static String ago(long now, long at) {
+        if (at <= 0 || at > now + 60_000) return "";
+        long minutes = (now - at) / 60_000;
+        if (minutes < 1) return "เมื่อครู่";
+        if (minutes < 60) return minutes + " นาทีที่แล้ว";
+        long hours = minutes / 60;
+        return hours < 24 ? hours + " ชม.ที่แล้ว" : "";
+    }
+
     void refreshIfStale() {
         if (!active() || busy || SystemClock.elapsedRealtime() - fetchedAt < EVERY_MS) return;
         busy = true;
@@ -159,6 +175,51 @@ final class Feed {
             }
         }
         return allDay;
+    }
+
+    /** "วันนี้" / "พรุ่งนี้" / "พฤ. 29 ต.ค." for the day `at` falls on, seen from `now`. */
+    static String dayLabel(long at, long now) {
+        java.util.Calendar day = new java.util.GregorianCalendar();
+        day.setTimeInMillis(now);
+        day.set(java.util.Calendar.HOUR_OF_DAY, 0);
+        day.set(java.util.Calendar.MINUTE, 0);
+        day.set(java.util.Calendar.SECOND, 0);
+        day.set(java.util.Calendar.MILLISECOND, 0);
+        long start = day.getTimeInMillis();
+        long shown = Math.max(at, start);
+        int away = (int) Math.round((shown - start) / 86_400_000.0);
+        return away <= 0 ? "วันนี้" : away == 1 ? "พรุ่งนี้" : Thai.tinyDate(shown);
+    }
+
+    /** The events of the nearest day that still has something coming (all-day first, then by start), up to 14 days ahead. */
+    List<Ical.Event> nextDay(long now) {
+        List<Ical.Event> out = new ArrayList<>();
+        Ical cal = calendar;
+        if (cal == null) return out;
+        java.util.Calendar day = new java.util.GregorianCalendar();
+        day.setTimeInMillis(now);
+        day.set(java.util.Calendar.HOUR_OF_DAY, 0);
+        day.set(java.util.Calendar.MINUTE, 0);
+        day.set(java.util.Calendar.SECOND, 0);
+        day.set(java.util.Calendar.MILLISECOND, 0);
+        long today = day.getTimeInMillis();
+        long best = Long.MAX_VALUE;
+        List<Ical.Event> coming = new ArrayList<>();
+        for (Ical.Event e : cal.between(now - 2 * 3_600_000L, today + 14 * 86_400_000L)) {
+            if (!e.allDay && e.end <= now && e.end > e.start) continue;
+            coming.add(e);
+            best = Math.min(best, Math.floorDiv(Math.max(e.start, today) - today, 86_400_000L));
+        }
+        for (Ical.Event e : coming) {
+            if (Math.floorDiv(Math.max(e.start, today) - today, 86_400_000L) == best) out.add(e);
+        }
+        java.util.Collections.sort(out, new java.util.Comparator<Ical.Event>() {
+            @Override public int compare(Ical.Event a, Ical.Event b) {
+                if (a.allDay != b.allDay) return a.allDay ? -1 : 1;
+                return Long.compare(a.start, b.start);
+            }
+        });
+        return out;
     }
 
     /** The channel's title, shortened: "ข่าวไทยรัฐออนไลน์ - ข่าวข่าว" → "ไทยรัฐ" for the known ones, else the part before " - ". */
